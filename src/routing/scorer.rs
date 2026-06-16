@@ -196,23 +196,27 @@ fn has_reasoning_keywords(messages: &[crate::schema::inbound::InboundMessage]) -
         .any(|kw| combined.contains(kw))
 }
 
-/// Rough token estimate: ~4 chars per token for English. Good enough
-/// for tier classification; not a substitute for real tokenization
-/// (which tiktoken-rs would provide, added in phase 2).
+/// Approximate token count from raw text using tiktoken-rs. Picks
+/// cl100k_base or o200k_base based on the model name. Real token
+/// counts for Anthropic / Mistral / etc. may differ by a few percent
+/// — this is the same approximation OpenAI's tokenizer makes.
 fn approx_token_count(messages: &[crate::schema::inbound::InboundMessage]) -> u32 {
-    let chars: usize = messages
-        .iter()
-        .map(|m| match &m.content {
-            serde_json::Value::String(s) => s.len(),
+    let mut count = 0u32;
+    for m in messages {
+        let text = match &m.content {
+            serde_json::Value::String(s) => s.clone(),
             serde_json::Value::Array(arr) => arr
                 .iter()
                 .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
-                .map(|s| s.len())
-                .sum::<usize>(),
-            _ => 0,
-        })
-        .sum();
-    (chars / 4) as u32
+                .collect::<Vec<_>>()
+                .join("\n"),
+            _ => String::new(),
+        };
+        // The model is unknown at scorer time; o200k for safety.
+        // Real cost is computed from the upstream's reported usage.
+        count = count.saturating_add(crate::tokens::count("gpt-4o", &text));
+    }
+    count
 }
 
 fn rule_matches(

@@ -8,11 +8,13 @@ pub mod db;
 pub mod error;
 pub mod log;
 pub mod metadata;
+pub mod oauth;
 pub mod providers;
 pub mod proxy;
 pub mod routing;
 pub mod schema;
 pub mod server;
+pub mod tokens;
 
 use std::sync::Arc;
 
@@ -25,6 +27,7 @@ pub struct AppState {
     pub db: db::Db,
     pub metadata: metadata::MetadataStore,
     pub key_store: auth::KeyStore,
+    pub oauth: oauth::OAuthManager,
 }
 
 impl AppState {
@@ -35,6 +38,7 @@ impl AppState {
         db: db::Db,
         metadata: metadata::MetadataStore,
         key_store: auth::KeyStore,
+        oauth: oauth::OAuthManager,
     ) -> Self {
         Self {
             pipeline: Arc::new(pipeline),
@@ -43,6 +47,7 @@ impl AppState {
             db,
             metadata,
             key_store,
+            oauth,
         }
     }
 }

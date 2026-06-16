@@ -3,6 +3,7 @@
 //! user-overrides table from the cost config.
 
 use crate::providers::manifest;
+use crate::tokens;
 
 pub fn calculate(
     provider_id: &str,
@@ -26,6 +27,13 @@ pub fn calculate(
     let cost = (input_tokens as f64 / 1_000_000.0) * in_price
         + (output_tokens as f64 / 1_000_000.0) * out_price;
     Some(cost)
+}
+
+/// Estimate token count from raw text using tiktoken-rs. Used by the
+/// scorer for high_context detection and by callers that need a
+/// token count before the response comes back.
+pub fn estimate_tokens(model: &str, text: &str) -> u32 {
+    tokens::count(model, text)
 }
 
 fn manifest_lookup_by_id(provider_id: &str) -> Option<manifest::ManifestProvider> {

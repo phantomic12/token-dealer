@@ -89,11 +89,13 @@ impl Pipeline {
         )?;
 
         let key = {
+            let tier_override = cfg.tier_key_override(tier);
             let cfg_key = cfg
                 .providers
                 .iter()
                 .find(|p| p.id == route.provider_id)
-                .and_then(|p| p.key.as_deref());
+                .and_then(|p| p.key.as_deref())
+                .or(tier_override);
             resolve_key(&self.key_store, &route.provider_id, cfg_key).await
         };
         if key.is_empty() {

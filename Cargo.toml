@@ -65,6 +65,9 @@ aes-gcm = "0.10"
 rand = "0.8"
 hex = "0.4"
 
+# Real token counting for cost + scorer
+tiktoken-rs = "0.7"
+
 # Database (bundled SQLite — no system libsqlite3 needed)
 rusqlite = { version = "0.32", features = ["bundled"] }
 

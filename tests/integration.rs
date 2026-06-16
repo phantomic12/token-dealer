@@ -64,9 +64,10 @@ async fn make_state(mock_base: &str) -> AppState {
         db.clone(),
         &token_dealer::auth::MasterKey::from_env_or_generate().unwrap(),
     );
-    let key_store = token_dealer::auth::KeyStore::new(
+    let oauth = token_dealer::oauth::OAuthManager::new(
         db.clone(),
-        &token_dealer::auth::MasterKey::from_env_or_generate().unwrap(),
+        key_store.clone(),
+        http.clone(),
     );
     let pipeline = Pipeline::new(
         registry,
@@ -85,6 +86,7 @@ async fn make_state(mock_base: &str) -> AppState {
         db,
         metadata,
         key_store,
+        oauth,
     )
 }
 
@@ -316,6 +318,15 @@ async fn non_standard_path_provider_routes_correctly() {
         db.clone(),
         &token_dealer::auth::MasterKey::from_env_or_generate().unwrap(),
     );
+    let key_store = token_dealer::auth::KeyStore::new(
+        db.clone(),
+        &token_dealer::auth::MasterKey::from_env_or_generate().unwrap(),
+    );
+    let oauth = token_dealer::oauth::OAuthManager::new(
+        db.clone(),
+        key_store.clone(),
+        http.clone(),
+    );
     let pipeline = Pipeline::new(
         registry,
         svc.clone(),
@@ -331,6 +342,7 @@ async fn non_standard_path_provider_routes_correctly() {
         db,
         token_dealer::metadata::MetadataStore::new(),
         key_store,
+        oauth,
     );
     let app = build_router(state);
 
@@ -457,7 +469,28 @@ async fn fallback_chain_skips_500_provider_to_next() {
         db.clone(),
         &token_dealer::auth::MasterKey::from_env_or_generate().unwrap(),
     );
-    let pipeline = Pipeline::new(registry, svc.clone(), http, db.clone(), HealthRegistry::new(), key_store.clone());
+    let oauth = token_dealer::oauth::OAuthManager::new(
+        db.clone(),
+        key_store.clone(),
+        http.clone(),
+    );
+    let key_store = token_dealer::auth::KeyStore::new(
+        db.clone(),
+        &token_dealer::auth::MasterKey::from_env_or_generate().unwrap(),
+    );
+    let oauth = token_dealer::oauth::OAuthManager::new(
+        db.clone(),
+        key_store.clone(),
+        http.clone(),
+    );
+    let pipeline = Pipeline::new(
+        registry,
+        svc.clone(),
+        http,
+        db.clone(),
+        HealthRegistry::new(),
+        key_store.clone(),
+    );
     let state = AppState::new(
         pipeline,
         svc,
@@ -465,6 +498,7 @@ async fn fallback_chain_skips_500_provider_to_next() {
         db,
         token_dealer::metadata::MetadataStore::new(),
         key_store,
+        oauth,
     );
     let app = build_router(state);
 
@@ -562,7 +596,19 @@ async fn auth_rejects_request_with_wrong_key() {
         db.clone(),
         &token_dealer::auth::MasterKey::from_env_or_generate().unwrap(),
     );
-    let pipeline = Pipeline::new(registry, svc.clone(), http, db.clone(), HealthRegistry::new(), key_store.clone());
+    let oauth = token_dealer::oauth::OAuthManager::new(
+        db.clone(),
+        key_store.clone(),
+        http.clone(),
+    );
+    let pipeline = Pipeline::new(
+        registry,
+        svc.clone(),
+        http,
+        db.clone(),
+        HealthRegistry::new(),
+        key_store.clone(),
+    );
     let state = AppState::new(
         pipeline,
         svc,
@@ -570,6 +616,7 @@ async fn auth_rejects_request_with_wrong_key() {
         db,
         token_dealer::metadata::MetadataStore::new(),
         key_store,
+        oauth,
     );
 
     // No auth header
@@ -818,7 +865,28 @@ async fn image_endpoint_passes_through_to_provider() {
         db.clone(),
         &token_dealer::auth::MasterKey::from_env_or_generate().unwrap(),
     );
-    let pipeline = Pipeline::new(registry, svc.clone(), http, db.clone(), HealthRegistry::new(), key_store.clone());
+    let oauth = token_dealer::oauth::OAuthManager::new(
+        db.clone(),
+        key_store.clone(),
+        http.clone(),
+    );
+    let key_store = token_dealer::auth::KeyStore::new(
+        db.clone(),
+        &token_dealer::auth::MasterKey::from_env_or_generate().unwrap(),
+    );
+    let oauth = token_dealer::oauth::OAuthManager::new(
+        db.clone(),
+        key_store.clone(),
+        http.clone(),
+    );
+    let pipeline = Pipeline::new(
+        registry,
+        svc.clone(),
+        http,
+        db.clone(),
+        HealthRegistry::new(),
+        key_store.clone(),
+    );
     let state = AppState::new(
         pipeline,
         svc,
@@ -826,6 +894,7 @@ async fn image_endpoint_passes_through_to_provider() {
         db,
         token_dealer::metadata::MetadataStore::new(),
         key_store,
+        oauth,
     );
     let app = build_router(state);
 

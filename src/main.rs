@@ -55,11 +55,44 @@ async fn main() -> anyhow::Result<()> {
     let metadata = MetadataStore::new();
     token_dealer::metadata::spawn_refresher(metadata.clone());
 
+    // Spawn log retention pruner if configured.
+    let retention_days = snapshot.log_retention_days;
+    if retention_days > 0 {
+        let db_for_pruner = db.clone();
+        let cfg_for_pruner = config.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+                let days = cfg_for_pruner.snapshot().await.log_retention_days;
+                if days == 0 {
+                    continue;
+                }
+                let res = db_for_pruner
+                    .with(move |conn| {
+                        Ok::<_, anyhow::Error>(
+                            conn.execute(
+                                "DELETE FROM request_log WHERE created_at < datetime('now', ?1)",
+                                rusqlite::params![format!("-{} days", days as i64)],
+                            )?,
+                        )
+                    })
+                    .await;
+                match res {
+                    Ok(n) if n > 0 => tracing::info!(rows = n, days, "log retention prune"),
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!(error = %e, "log retention prune failed"),
+                }
+            }
+        });
+    }
+
     let health = HealthRegistry::new();
     let master = MasterKey::from_env_or_generate()?;
     let key_store = KeyStore::new(db.clone(), &master);
+    let oauth = token_dealer::oauth::OAuthManager::new(db.clone(), key_store.clone(), http.clone());
+    token_dealer::oauth::spawn_refresher(oauth.clone());
     let pipeline = Pipeline::new(registry, config.clone(), http, db.clone(), health.clone(), key_store.clone());
-    let state = AppState::new(pipeline, config, health, db, metadata, key_store);
+    let state = AppState::new(pipeline, config, health, db, metadata, key_store, oauth);
 
     let app = build_router(state);
     let listener = tokio::net::TcpListener::bind(&bind)

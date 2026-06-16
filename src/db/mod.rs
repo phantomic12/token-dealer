@@ -109,6 +109,15 @@ fn run_migrations(conn: &Connection) -> anyhow::Result<()> {
             created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
+
+        CREATE TABLE IF NOT EXISTS oauth_config (
+            provider_id          TEXT PRIMARY KEY,
+            token_url            TEXT NOT NULL,
+            client_id            TEXT NOT NULL,
+            client_secret        TEXT,
+            extra_json           TEXT NOT NULL DEFAULT '{}',
+            refresh_buffer_secs  INTEGER NOT NULL DEFAULT 300
+        );
         "#,
     )?;
     // Ensure a meta row exists for migrations tracking. We don't

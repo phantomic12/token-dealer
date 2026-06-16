@@ -268,12 +268,21 @@ pub struct RouterConfig {
     /// and dynamic tier addition.
     #[serde(default)]
     pub tiers: HashMap<String, TierConfig>,
+    /// Per-tier key overrides. The key for tier `simple` here takes
+    /// precedence over the provider's TOML `key` field, the env var,
+    /// and the encrypted store when a request lands on the `simple`
+    /// tier. Useful for BYOK billing separation or sandboxing.
+    #[serde(default)]
+    pub tier_keys: HashMap<String, String>,
     #[serde(default)]
     pub detection: DetectionConfig,
     #[serde(default)]
     pub retry: RetryConfig,
     #[serde(default)]
     pub streaming: StreamingConfig,
+    /// SQLite log retention in days. 0 = forever (default).
+    #[serde(default)]
+    pub log_retention_days: u32,
 }
 
 impl RouterConfig {
@@ -281,5 +290,12 @@ impl RouterConfig {
     /// `provider/model` string.
     pub fn primary_for_tier(&self, tier: Tier) -> Option<&str> {
         self.tiers.get(tier.as_str()).map(|t| t.primary.as_str())
+    }
+
+    /// Key override for a specific tier, if one is configured.
+    /// Returns the raw literal — caller resolves env vars and the
+    /// encrypted store.
+    pub fn tier_key_override(&self, tier: Tier) -> Option<&str> {
+        self.tier_keys.get(tier.as_str()).map(String::as_str)
     }
 }
