@@ -71,6 +71,14 @@ pub struct OAuthManager {
     /// Per-provider OAuth config (refresh URL etc). Persisted in
     /// `oauth_config` table.
     configs: Arc<RwLock<HashMap<String, OAuthConfig>>>,
+    /// In-memory state tokens for popup_oauth. Keyed by the state
+    /// string the provider redirects back with; value is the
+    /// provider_id we issued it for.
+    states: Arc<RwLock<HashMap<String, String>>>,
+    /// In-memory device_codes for device_code. Keyed by the
+    /// device_code string; value is the provider_id it was
+    /// issued for.
+    devices: Arc<RwLock<HashMap<String, String>>>,
     http: reqwest::Client,
 }
 
@@ -81,6 +89,8 @@ impl OAuthManager {
             key_store,
             cache: Arc::new(RwLock::new(HashMap::new())),
             configs: Arc::new(RwLock::new(HashMap::new())),
+            states: Arc::new(RwLock::new(HashMap::new())),
+            devices: Arc::new(RwLock::new(HashMap::new())),
             http,
         }
     }
@@ -288,4 +298,260 @@ pub fn spawn_refresher(manager: OAuthManager) {
             }
         }
     });
+}
+
+// ─── popup_oauth (OAuth2 authorization-code redirect) ───────────────────
+
+impl OAuthManager {
+/// Generate a state token and build the authorize URL for a popup_oauth
+/// provider. The user visits the URL, logs in, gets redirected to
+/// the callback endpoint with `?code=...&state=...`.
+pub async fn start_popup_oauth(
+    &self,
+    provider_id: &str,
+    redirect_uri: &str,
+) -> anyhow::Result<(String, String)> {
+    let cfg = lookup_manifest_oauth(provider_id)
+        .ok_or_else(|| anyhow::anyhow!("provider {} has no OAuth config or is not popup_oauth", provider_id))?;
+    if cfg.authorize_url.is_empty() {
+        anyhow::bail!("provider {} is not popup_oauth (no authorize_url)", provider_id);
+    }
+    let state = format!(
+        "{}.{}",
+        provider_id,
+        uuid::Uuid::new_v4().simple()
+    );
+    // Standard OAuth2: response_type=code, include state + redirect_uri.
+    // We hardcode scope=openid profile email offline_access for OpenAI;
+    // other providers may ignore unknown scopes.
+    let url = format!(
+        "{}?response_type=code&client_id={}&redirect_uri={}&state={}&scope=openid+profile+email+offline_access",
+        cfg.authorize_url,
+        urlencoding(&cfg.client_id),
+        urlencoding(redirect_uri),
+        urlencoding(&state),
+    );
+    // Store state for verification on callback.
+    self.states.write().await.insert(state.clone(), provider_id.to_string());
+    Ok((url, state))
+}
+
+/// Handle the redirect from the OAuth provider. Verifies state,
+/// exchanges code for tokens, stores the refresh_token. Idempotent
+/// on state (the same state won't be processed twice).
+pub async fn complete_popup_oauth(
+    &self,
+    provider_id: &str,
+    code: &str,
+    state: &str,
+    redirect_uri: &str,
+) -> anyhow::Result<()> {
+    // Verify state
+    let expected_provider = {
+        let mut states = self.states.write().await;
+        match states.remove(state) {
+            Some(p) => p,
+            None => anyhow::bail!("invalid or expired state"),
+        }
+    };
+    if expected_provider != provider_id {
+        anyhow::bail!("state was issued for a different provider");
+    }
+
+    let cfg = lookup_manifest_oauth(provider_id)
+        .ok_or_else(|| anyhow::anyhow!("provider {} has no OAuth config", provider_id))?;
+
+    let body = serde_json::json!({
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": redirect_uri,
+        "client_id": cfg.client_id,
+    });
+
+    let resp = self
+        .http
+        .post(cfg.token_url)
+        .json(&body)
+        .send()
+        .await?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        anyhow::bail!("token exchange failed: {} {}: {}", status.as_u16(), status.canonical_reason().unwrap_or(""), text);
+    }
+    let v: serde_json::Value = resp.json().await?;
+    let new_refresh = v
+        .get("refresh_token")
+        .and_then(|x| x.as_str())
+        .ok_or_else(|| anyhow::anyhow!("token response missing refresh_token"))?
+        .to_string();
+    self.set_refresh_token(provider_id, &new_refresh).await?;
+    Ok(())
+}
+
+// ─── device_code (OAuth2 device authorization grant) ────────────────────
+
+/// Start a device-code flow. Returns the user-visible code, the
+/// verification URL, the polling interval, and the device_code
+/// (used by the client to poll).
+pub async fn start_device_flow(
+    &self,
+    provider_id: &str,
+) -> anyhow::Result<DeviceFlowInfo> {
+    let cfg = lookup_manifest_oauth(provider_id)
+        .ok_or_else(|| anyhow::anyhow!("provider {} has no OAuth config", provider_id))?;
+    if cfg.device_code_url.is_empty() {
+        anyhow::bail!("provider {} is not device_code", provider_id);
+    }
+    let body = serde_json::json!({
+        "client_id": cfg.client_id,
+        "scope": "openid profile email offline_access",
+    });
+    let resp = self
+        .http
+        .post(cfg.device_code_url)
+        .json(&body)
+        .send()
+        .await?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        anyhow::bail!("device_code request failed: {} {}: {}", status.as_u16(), status.canonical_reason().unwrap_or(""), text);
+    }
+    let v: serde_json::Value = resp.json().await?;
+    let device_code = v
+        .get("device_code")
+        .and_then(|x| x.as_str())
+        .ok_or_else(|| anyhow::anyhow!("device_code response missing device_code"))?
+        .to_string();
+    let user_code = v
+        .get("user_code")
+        .and_then(|x| x.as_str())
+        .ok_or_else(|| anyhow::anyhow!("device_code response missing user_code"))?
+        .to_string();
+    let verification_uri = v
+        .get("verification_uri")
+        .or_else(|| v.get("verification_url"))
+        .and_then(|x| x.as_str())
+        .ok_or_else(|| anyhow::anyhow!("device_code response missing verification_uri"))?
+        .to_string();
+    let interval = v
+        .get("interval")
+        .and_then(|x| x.as_u64())
+        .unwrap_or(5);
+    let expires_in = v
+        .get("expires_in")
+        .and_then(|x| x.as_u64())
+        .unwrap_or(600);
+
+    // Store device_code for poll
+    self.devices
+        .write()
+        .await
+        .insert(device_code.clone(), provider_id.to_string());
+
+    Ok(DeviceFlowInfo {
+        device_code,
+        user_code,
+        verification_uri,
+        interval,
+        expires_in,
+    })
+}
+
+/// Poll the device-token endpoint. Returns Ok(true) on success
+/// (refresh_token stored), Ok(false) on pending (user hasn't
+/// approved yet), Err on rejection or other terminal error.
+pub async fn poll_device_flow(
+    &self,
+    device_code: &str,
+) -> anyhow::Result<bool> {
+    let provider_id = {
+        let devices = self.devices.read().await;
+        devices.get(device_code).cloned()
+    };
+    let provider_id = match provider_id {
+        Some(p) => p,
+        None => anyhow::bail!("device_code not found (expired or never issued)"),
+    };
+    let cfg = lookup_manifest_oauth(&provider_id)
+        .ok_or_else(|| anyhow::anyhow!("provider {} has no OAuth config", provider_id))?;
+
+    let body = serde_json::json!({
+        "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+        "device_code": device_code,
+        "client_id": cfg.client_id,
+    });
+    let resp = self
+        .http
+        .post(cfg.device_token_url)
+        .json(&body)
+        .send()
+        .await?;
+    let status = resp.status();
+    let body: serde_json::Value = resp.json().await?;
+
+    if status.is_success() {
+        let new_refresh = body
+            .get("refresh_token")
+            .and_then(|x| x.as_str())
+            .ok_or_else(|| anyhow::anyhow!("token response missing refresh_token"))?
+            .to_string();
+        self.set_refresh_token(&provider_id, &new_refresh).await?;
+        // Clean up the device_code entry
+        self.devices.write().await.remove(device_code);
+        return Ok(true);
+    }
+
+    // Standard device_code error responses:
+    // authorization_pending — user hasn't approved yet, keep polling
+    // slow_down — interval too short, back off
+    // expired_token / access_denied — terminal, remove device_code
+    let err = body.get("error").and_then(|x| x.as_str()).unwrap_or("");
+    match err {
+        "authorization_pending" => Ok(false),
+        "slow_down" => Ok(false), // client should slow down
+        "expired_token" | "access_denied" => {
+            self.devices.write().await.remove(device_code);
+            anyhow::bail!("device_code rejected: {}", err);
+        }
+        _ => anyhow::bail!("device_code poll failed: {} {}: {}", status.as_u16(), err, body),
+    }
+}
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DeviceFlowInfo {
+    pub device_code: String,
+    pub user_code: String,
+    pub verification_uri: String,
+    pub interval: u64,
+    pub expires_in: u64,
+}
+
+/// Look up the manifest's OAuth config for a provider, returning
+/// None for providers without OAuth or unknown providers.
+fn lookup_manifest_oauth(
+    provider_id: &str,
+) -> Option<crate::providers::manifest::ManifestOAuth> {
+    use crate::providers::manifest;
+    let pt = crate::providers::resolve_alias(provider_id)?;
+    manifest::lookup(pt).and_then(|m| m.oauth)
+}
+
+fn urlencoding(s: &str) -> String {
+    // Minimal percent-encoding for URL query values. Avoids
+    // pulling in the `urlencoding` crate.
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char);
+            }
+            _ => {
+                out.push_str(&format!("%{:02X}", b));
+            }
+        }
+    }
+    out
 }

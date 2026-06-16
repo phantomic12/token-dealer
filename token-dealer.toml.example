@@ -9,6 +9,9 @@
 [server]
 bind = "0.0.0.0:8080"
 log_level = "info"
+# For OAuth popup flows — must be publicly reachable from the
+# user's browser. The test deployment is at 100.99.145.19:18080.
+oauth_redirect_uri = "http://100.99.145.19:18080/admin/oauth/openai/callback"
 
 [database]
 path = "/data/router.db"

@@ -10,6 +10,10 @@ pub struct ServerConfig {
     pub bind: String,
     #[serde(default = "default_log_level")]
     pub log_level: String,
+    /// OAuth2 redirect URI used by popup_oauth flows. Must be
+    /// publicly reachable from the user's browser.
+    #[serde(default)]
+    pub oauth_redirect_uri: String,
 }
 
 fn default_log_level() -> String {
@@ -21,6 +25,7 @@ impl Default for ServerConfig {
         Self {
             bind: "0.0.0.0:8080".into(),
             log_level: "info".into(),
+            oauth_redirect_uri: String::new(),
         }
     }
 }

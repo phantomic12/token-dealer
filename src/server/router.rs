@@ -11,8 +11,9 @@ use super::ui::{
 };
 use super::AppState;
 use super::admin::{
-    add_provider, add_rule, delete_key, delete_rule, list_provider_types, remove_provider,
-    save_config, set_key, test_provider, update_tier, validate_provider_type, set_oauth_refresh,
+    add_provider, add_rule, delete_key, delete_rule, list_provider_types, oauth_callback,
+    poll_device_oauth, remove_provider, save_config, set_key, set_oauth_refresh, start_device_oauth,
+    start_oauth, test_provider, update_tier, validate_provider_type,
 };
 use axum::{
     middleware::from_fn_with_state,
@@ -54,6 +55,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/admin/rules/:index", post(delete_rule).delete(delete_rule))
         .route("/admin/keys/:provider_id", post(set_key).delete(delete_key))
         .route("/admin/oauth/:provider_id/refresh", post(set_oauth_refresh))
+        .route("/admin/oauth/:provider_id/start", post(start_oauth))
+        .route("/admin/oauth/:provider_id/callback", get(oauth_callback))
+        .route("/admin/oauth/:provider_id/device/start", post(start_device_oauth))
+        .route("/admin/oauth/device/poll", post(poll_device_oauth))
         // WebUI
         .route("/", get(index))
         .route("/ui", get(index))

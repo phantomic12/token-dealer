@@ -219,6 +219,121 @@ pub async fn set_oauth_refresh(
     }
 }
 
+/// Start a popup_oauth flow. POST /admin/oauth/:provider_id/start
+/// with optional `{"redirect_uri": "..."}`. Returns the authorize
+/// URL the user should visit.
+pub async fn start_oauth(
+    State(state): State<AppState>,
+    axum::extract::Path(provider_id): axum::extract::Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    let snap = state.config.snapshot().await;
+    let redirect_uri = body
+        .get("redirect_uri")
+        .and_then(|v| v.as_str())
+        .map(String::from)
+        .unwrap_or_else(|| snap.server.oauth_redirect_uri.clone());
+    match state.oauth.start_popup_oauth(&provider_id, &redirect_uri).await {
+        Ok((url, state)) => (
+            StatusCode::OK,
+            Json(json!({"authorize_url": url, "state": state})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": format!("start_oauth failed: {e}")})),
+        )
+            .into_response(),
+    }
+}
+
+/// OAuth callback. GET /admin/oauth/:provider_id/callback?code=...&state=...
+/// Exchanges the code for tokens, stores the refresh_token, then
+/// redirects to the UI with a flash message.
+pub async fn oauth_callback(
+    State(state): State<AppState>,
+    axum::extract::Path(provider_id): axum::extract::Path<String>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let code = params.get("code").cloned().unwrap_or_default();
+    let oauth_state = params.get("state").cloned().unwrap_or_default();
+    let snap = state.config.snapshot().await;
+    let redirect_uri = snap.server.oauth_redirect_uri.clone();
+    match state
+        .oauth
+        .complete_popup_oauth(&provider_id, &code, &oauth_state, &redirect_uri)
+        .await
+    {
+        Ok(_) => axum::response::Redirect::to("/ui/providers?flash=oauth_ok").into_response(),
+        Err(e) => axum::response::Redirect::to(&format!(
+            "/ui/providers?flash=oauth_err&msg={}",
+            urlencoding_simple(&e.to_string())
+        ))
+        .into_response(),
+    }
+}
+
+/// Start a device_code flow. POST /admin/oauth/:provider_id/device/start
+/// returns the user_code + verification_uri + device_code (for
+/// the client to poll).
+pub async fn start_device_oauth(
+    State(state): State<AppState>,
+    axum::extract::Path(provider_id): axum::extract::Path<String>,
+) -> Response {
+    match state.oauth.start_device_flow(&provider_id).await {
+        Ok(info) => (StatusCode::OK, Json(info)).into_response(),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": format!("start_device failed: {e}")})),
+        )
+            .into_response(),
+    }
+}
+
+/// Poll a device_code flow. POST /admin/oauth/device/poll
+/// with `{"device_code": "..."}`. Returns `{authorized: true}` on
+/// success (refresh_token stored) or `{authorized: false}` on
+/// pending.
+pub async fn poll_device_oauth(
+    State(state): State<AppState>,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    let device_code = body
+        .get("device_code")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    if device_code.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "device_code required"})),
+        )
+            .into_response();
+    }
+    match state.oauth.poll_device_flow(&device_code).await {
+        Ok(true) => (StatusCode::OK, Json(json!({"authorized": true}))).into_response(),
+        Ok(false) => (StatusCode::OK, Json(json!({"authorized": false}))).into_response(),
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({"error": format!("poll failed: {e}")})),
+        )
+            .into_response(),
+    }
+}
+
+fn urlencoding_simple(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char);
+            }
+            _ => out.push_str(&format!("%{:02X}", b)),
+        }
+    }
+    out
+}
+
 #[derive(Deserialize)]
 pub struct AddRuleRequest {
     /// Optional index — when present, replaces the rule at that index

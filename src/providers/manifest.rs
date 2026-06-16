@@ -17,6 +17,27 @@ use super::super::config::types::ProviderType;
 pub struct ManifestOAuth {
     pub token_url: &'static str,
     pub client_id: &'static str,
+    /// Authorization endpoint for popup_oauth providers. Empty if
+    /// not applicable (refresh_token-paste only, or device_code).
+    pub authorize_url: &'static str,
+    /// Token URL for device_code providers (returns the access +
+    /// refresh tokens after the user authorizes the device). The
+    /// main `token_url` above is used for refreshing.
+    pub device_token_url: &'static str,
+    /// Device-code endpoint for device_code providers. POST
+    /// returns `{device_code, user_code, verification_uri, ...}`.
+    /// Empty if not applicable.
+    pub device_code_url: &'static str,
+}
+
+/// Subscription metadata for token-mode providers. These are not
+/// OAuth — the user pastes a token/key with a specific prefix and
+/// the system uses it directly. The metadata is used by the UI to
+/// show the right placeholder and validate the key format.
+#[derive(Debug, Clone, Copy)]
+pub struct Subscription {
+    pub label: &'static str,
+    pub token_prefix: &'static str,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -34,6 +55,10 @@ pub struct ManifestProvider {
     /// When set, the `key` field is a refresh token and the
     /// `OAuthManager` will exchange it for an access token.
     pub oauth: Option<ManifestOAuth>,
+    /// When set, the provider has a subscription mode where the
+    /// user pastes a token with a specific prefix. The system
+    /// stores it as a plain API key (no refresh needed).
+    pub subscription: Option<Subscription>,
 }
 
 /// All known provider types. Used by the wizard UI to render the
@@ -73,20 +98,38 @@ pub const ALL_TYPES: &[ProviderType] = &[
 
 pub fn lookup(pt: ProviderType) -> Option<ManifestProvider> {
     Some(match pt {
+        ProviderType::Generic => return None,
+
         // Wire formats
         ProviderType::Anthropic => ManifestProvider {
             base_url: "https://api.anthropic.com",
             default_model: "claude-sonnet-4-5",
             path: "/v1/messages",
             requires_key: true,
-            local_only: false, oauth: None,
+            local_only: false,
+            oauth: None,
+            subscription: Some(Subscription {
+                label: "Claude Max / Pro subscription",
+                token_prefix: "sk-ant-oat",
+            }),
         },
         ProviderType::Google => ManifestProvider {
             base_url: "https://generativelanguage.googleapis.com",
             default_model: "gemini-2.0-flash",
             path: "", // set per-model in the adapter
             requires_key: true,
-            local_only: false, oauth: None,
+            local_only: false,
+            oauth: Some(ManifestOAuth {
+                token_url: "https://oauth2.googleapis.com/token",
+                client_id: "681255809395-oo8ft2oprdrnp9e3aqf6av3hmi99ikee6.apps.googleusercontent.com",
+                authorize_url: "https://accounts.google.com/o/oauth2/v2/auth",
+                device_code_url: "",
+                device_token_url: "",
+            }),
+            subscription: Some(Subscription {
+                label: "Sign in with Google (CodeAssist)",
+                token_prefix: "",
+            }),
         },
         ProviderType::Kiro => ManifestProvider {
             base_url: "https://q.us-east-1.amazonaws.com",
@@ -97,6 +140,13 @@ pub fn lookup(pt: ProviderType) -> Option<ManifestProvider> {
             oauth: Some(ManifestOAuth {
                 token_url: "https://prod.us-east-1.auth.desktop.kiro.dev/refreshToken",
                 client_id: "kiro-cli",
+                authorize_url: "",
+                device_code_url: "https://prod.us-east-1.auth.desktop.kiro.dev/deviceCode",
+                device_token_url: "https://prod.us-east-1.auth.desktop.kiro.dev/deviceToken",
+            }),
+            subscription: Some(Subscription {
+                label: "Kiro subscription",
+                token_prefix: "",
             }),
         },
         ProviderType::Responses => ManifestProvider {
@@ -108,143 +158,234 @@ pub fn lookup(pt: ProviderType) -> Option<ManifestProvider> {
             oauth: Some(ManifestOAuth {
                 token_url: "https://auth.openai.com/oauth/token",
                 client_id: "app_DoG7JaCkAU8T6mongo4zR1vM",
+                authorize_url: "https://auth.openai.com/oauth/authorize",
+                device_code_url: "",
+                device_token_url: "",
+            }),
+            subscription: Some(Subscription {
+                label: "ChatGPT Plus/Pro/Team",
+                token_prefix: "",
             }),
         },
-        ProviderType::Generic => return None,
-
         // OpenAI-compat providers
         ProviderType::Openai => ManifestProvider {
             base_url: "https://api.openai.com",
             default_model: "gpt-4o",
             path: "/v1/chat/completions",
             requires_key: true,
-            local_only: false, oauth: None,
+            local_only: false,
+            oauth: Some(ManifestOAuth {
+                token_url: "https://auth.openai.com/oauth/token",
+                client_id: "app_DoG7JaCkAU8T6mongo4zR1vM",
+                authorize_url: "https://auth.openai.com/oauth/authorize",
+                device_code_url: "",
+                device_token_url: "",
+            }),
+            subscription: Some(Subscription {
+                label: "ChatGPT Plus/Pro/Team",
+                token_prefix: "",
+            }),
         },
         ProviderType::Openrouter => ManifestProvider {
             base_url: "https://openrouter.ai",
             default_model: "anthropic/claude-sonnet-4-5",
             path: "/api/v1/chat/completions",
             requires_key: true,
-            local_only: false, oauth: None,
+            local_only: false,
+            oauth: None,
+            subscription: None,
         },
         ProviderType::Tokenrouter => ManifestProvider {
             base_url: "https://api.tokenrouter.com",
             default_model: "anthropic/claude-sonnet-4-5",
             path: "/v1/chat/completions",
             requires_key: true,
-            local_only: false, oauth: None,
+            local_only: false,
+            oauth: None,
+            subscription: None,
         },
         ProviderType::Groq => ManifestProvider {
             base_url: "https://api.groq.com/openai",
             default_model: "llama-3.3-70b-versatile",
             path: "/v1/chat/completions",
             requires_key: true,
-            local_only: false, oauth: None,
+            local_only: false,
+            oauth: None,
+            subscription: None,
         },
         ProviderType::Deepseek => ManifestProvider {
             base_url: "https://api.deepseek.com",
             default_model: "deepseek-chat",
             path: "/v1/chat/completions",
             requires_key: true,
-            local_only: false, oauth: None,
+            local_only: false,
+            oauth: None,
+            subscription: None,
         },
         ProviderType::Fireworks => ManifestProvider {
             base_url: "https://api.fireworks.ai/inference",
             default_model: "accounts/fireworks/models/llama-v3p3-70b-instruct",
             path: "/v1/chat/completions",
             requires_key: true,
-            local_only: false, oauth: None,
+            local_only: false,
+            oauth: None,
+            subscription: None,
         },
         ProviderType::Mistral => ManifestProvider {
             base_url: "https://api.mistral.ai",
             default_model: "mistral-large-latest",
             path: "/v1/chat/completions",
             requires_key: true,
-            local_only: false, oauth: None,
+            local_only: false,
+            oauth: None,
+            subscription: None,
         },
         ProviderType::Xai => ManifestProvider {
             base_url: "https://api.x.ai",
             default_model: "grok-2-latest",
             path: "/v1/chat/completions",
             requires_key: true,
-            local_only: false, oauth: None,
+            local_only: false,
+            oauth: Some(ManifestOAuth {
+                token_url: "https://auth.x.ai/oauth/token",
+                client_id: "xai-cli-public",
+                authorize_url: "https://auth.x.ai/oauth/authorize",
+                device_code_url: "",
+                device_token_url: "",
+            }),
+            subscription: Some(Subscription {
+                label: "Grok subscription",
+                token_prefix: "",
+            }),
         },
         ProviderType::Qwen => ManifestProvider {
             base_url: "https://dashscope.aliyuncs.com/compatible-mode",
             default_model: "qwen-plus",
             path: "/v1/chat/completions",
             requires_key: true,
-            local_only: false, oauth: None,
+            local_only: false,
+            oauth: None,
+            subscription: Some(Subscription {
+                label: "Qwen Token Plan",
+                token_prefix: "sk-sp-",
+            }),
         },
         ProviderType::Moonshot => ManifestProvider {
             base_url: "https://api.moonshot.ai",
             default_model: "kimi-k2-0711-preview",
             path: "/v1/chat/completions",
             requires_key: true,
-            local_only: false, oauth: None,
+            local_only: false,
+            oauth: None,
+            subscription: Some(Subscription {
+                label: "Kimi Coding Plan",
+                token_prefix: "",
+            }),
         },
         ProviderType::Zai => ManifestProvider {
             base_url: "https://api.z.ai",
             default_model: "glm-4.5",
             path: "/api/paas/v4/chat/completions",
             requires_key: true,
-            local_only: false, oauth: None,
+            local_only: false,
+            oauth: None,
+            subscription: Some(Subscription {
+                label: "GLM Coding Plan",
+                token_prefix: "",
+            }),
         },
         ProviderType::Xiaomi => ManifestProvider {
             base_url: "https://api.xiaomimimo.com",
             default_model: "mimo-v2-flash",
             path: "/v1/chat/completions",
             requires_key: true,
-            local_only: false, oauth: None,
+            local_only: false,
+            oauth: None,
+            subscription: Some(Subscription {
+                label: "Xiaomi MiMo Token Plan",
+                token_prefix: "tp-",
+            }),
         },
         ProviderType::Minimax => ManifestProvider {
             base_url: "https://api.minimax.io",
             default_model: "MiniMax-Text-01",
             path: "/v1/chat/completions",
             requires_key: true,
-            local_only: false, oauth: None,
+            local_only: false,
+            oauth: Some(ManifestOAuth {
+                token_url: "https://api.minimax.chat/oauth/token",
+                client_id: "minimax-cli",
+                authorize_url: "",
+                device_code_url: "https://api.minimax.chat/oauth/device/code",
+                device_token_url: "https://api.minimax.chat/oauth/token",
+            }),
+            subscription: Some(Subscription {
+                label: "MiniMax Coding Plan",
+                token_prefix: "",
+            }),
         },
         ProviderType::Byteplus => ManifestProvider {
             base_url: "https://ark.ap-southeast.bytepluses.com/api/v3",
             default_model: "ep-20240520-vision",
             path: "/chat/completions",
             requires_key: true,
-            local_only: false, oauth: None,
+            local_only: false,
+            oauth: None,
+            subscription: Some(Subscription {
+                label: "ModelArk Coding Plan",
+                token_prefix: "",
+            }),
         },
         ProviderType::Nvidia => ManifestProvider {
             base_url: "https://integrate.api.nvidia.com",
             default_model: "meta/llama-3.1-70b-instruct",
             path: "/v1/chat/completions",
             requires_key: true,
-            local_only: false, oauth: None,
+            local_only: false,
+            oauth: None,
+            subscription: None,
         },
         ProviderType::OpencodeGo => ManifestProvider {
             base_url: "https://opencode.ai/zen/go",
             default_model: "gpt-4o",
             path: "/v1/chat/completions",
             requires_key: true,
-            local_only: false, oauth: None,
+            local_only: false,
+            oauth: None,
+            subscription: Some(Subscription {
+                label: "OpenCode Go (beta)",
+                token_prefix: "",
+            }),
         },
         ProviderType::OpencodeZen => ManifestProvider {
             base_url: "https://opencode.ai/zen",
             default_model: "gpt-4o",
             path: "/v1/chat/completions",
             requires_key: true,
-            local_only: false, oauth: None,
+            local_only: false,
+            oauth: None,
+            subscription: None,
         },
         ProviderType::Kilo => ManifestProvider {
             base_url: "https://api.kilo.ai/api/gateway",
             default_model: "anthropic/claude-sonnet-4-5",
             path: "/chat/completions",
             requires_key: true,
-            local_only: false, oauth: None,
+            local_only: false,
+            oauth: None,
+            subscription: None,
         },
         ProviderType::Commandcode => ManifestProvider {
             base_url: "https://api.commandcode.ai/provider",
             default_model: "gpt-4o",
             path: "/v1/chat/completions",
             requires_key: true,
-            local_only: false, oauth: None,
+            local_only: false,
+            oauth: None,
+            subscription: Some(Subscription {
+                label: "Command Code subscription",
+                token_prefix: "",
+            }),
         },
         ProviderType::GithubCopilot => ManifestProvider {
             base_url: "https://api.githubcopilot.com",
@@ -255,6 +396,13 @@ pub fn lookup(pt: ProviderType) -> Option<ManifestProvider> {
             oauth: Some(ManifestOAuth {
                 token_url: "https://github.com/login/oauth/access_token",
                 client_id: "Iv1.b507a08c87ecfe98",
+                authorize_url: "https://github.com/login/oauth/authorize",
+                device_code_url: "https://github.com/login/device/code",
+                device_token_url: "https://github.com/login/oauth/access_token",
+            }),
+            subscription: Some(Subscription {
+                label: "GitHub Copilot subscription",
+                token_prefix: "",
             }),
         },
         ProviderType::Gitlawb => ManifestProvider {
@@ -265,28 +413,39 @@ pub fn lookup(pt: ProviderType) -> Option<ManifestProvider> {
             default_model: "gpt-4o",
             path: "/v1/chat/completions",
             requires_key: true,
-            local_only: false, oauth: None,
+            local_only: false,
+            oauth: None,
+            subscription: None,
         },
         ProviderType::Ollama => ManifestProvider {
             base_url: "http://localhost:11434",
             default_model: "llama3.1",
             path: "/v1/chat/completions",
             requires_key: false,
-            local_only: true, oauth: None,
+            local_only: true,
+            oauth: None,
+            subscription: None,
         },
         ProviderType::OllamaCloud => ManifestProvider {
             base_url: "https://ollama.com",
             default_model: "llama3.1",
             path: "/v1/chat/completions",
             requires_key: true,
-            local_only: false, oauth: None,
+            local_only: false,
+            oauth: None,
+            subscription: Some(Subscription {
+                label: "Ollama Cloud subscription",
+                token_prefix: "",
+            }),
         },
         ProviderType::LlamaCpp => ManifestProvider {
             base_url: "http://localhost:8080",
             default_model: "default",
             path: "/v1/chat/completions",
             requires_key: false,
-            local_only: true, oauth: None,
+            local_only: true,
+            oauth: None,
+            subscription: None,
         },
         ProviderType::LmStudio => ManifestProvider {
             base_url: "http://localhost:1234",
@@ -295,6 +454,7 @@ pub fn lookup(pt: ProviderType) -> Option<ManifestProvider> {
             requires_key: false,
             local_only: true,
             oauth: None,
+            subscription: None,
         },
     })
 }
