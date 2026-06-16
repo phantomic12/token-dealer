@@ -7,3 +7,5 @@ pub use types::{
     ProviderConfig, ProviderType, RetryConfig, RouterConfig, ServerConfig, StreamingConfig,
     TierConfig, TierTimeouts, TierTimeoutsSet,
 };
+
+use crate::auth::resolve as resolve_key;

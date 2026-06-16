@@ -8,7 +8,7 @@
 use super::fallback::{self, ExecutionResult, ProviderHandle, RoutingPlan};
 use super::super::config::ConfigService;
 use super::super::error::{AppError, AppResult};
-use super::super::providers::registry::resolve_key;
+use super::super::auth::resolve as resolve_key;
 use super::super::providers::ProviderRegistry;
 use super::super::schema::canonical::{CanonicalRequest, CanonicalResponse, Tier};
 use super::super::schema::inbound::{InboundRequest, PreRouting};
@@ -25,6 +25,7 @@ pub struct Pipeline {
     pub http: reqwest::Client,
     pub db: crate::db::Db,
     pub health: crate::providers::HealthRegistry,
+    pub key_store: crate::auth::KeyStore,
 }
 
 pub struct RoutingOutput {
@@ -41,6 +42,7 @@ impl Pipeline {
         http: reqwest::Client,
         db: crate::db::Db,
         health: crate::providers::HealthRegistry,
+        key_store: crate::auth::KeyStore,
     ) -> Self {
         let selector = Selector::new(registry.clone());
         Self {
@@ -50,6 +52,7 @@ impl Pipeline {
             http,
             db,
             health,
+            key_store,
         }
     }
 
@@ -91,7 +94,7 @@ impl Pipeline {
                 .iter()
                 .find(|p| p.id == route.provider_id)
                 .and_then(|p| p.key.as_deref());
-            resolve_key(&route.provider_id, cfg_key)
+            resolve_key(&self.key_store, &route.provider_id, cfg_key).await
         };
         if key.is_empty() {
             return Err(AppError::Internal(format!(
@@ -134,6 +137,7 @@ impl Pipeline {
 
         let registry = self.registry.clone();
         let config = self.config.clone();
+        let key_store = self.key_store.clone();
         let health_hook = super::fallback::HealthHook {
             registry: self.health.clone(),
             failure_threshold: cfg.retry.max_same_provider_retries.max(1),
@@ -142,6 +146,7 @@ impl Pipeline {
         let result = fallback::execute(plan, move |pid: &str| {
             let r = registry.clone();
             let c = config.clone();
+            let ks = key_store.clone();
             let p = pid.to_string();
             async move {
                 let g = r.read().await;
@@ -152,7 +157,7 @@ impl Pipeline {
                     .iter()
                     .find(|prov| prov.id == p)
                     .and_then(|prov| prov.key.as_deref());
-                let key = resolve_key(&p, cfg_key);
+                let key = resolve_key(&ks, &p, cfg_key).await;
                 Some(ProviderHandle {
                     provider_id: p,
                     model_id: adapter.default_model().to_string(),

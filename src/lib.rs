@@ -1,6 +1,7 @@
 //! token-dealer — high-performance LLM routing proxy.
 //! Public surface for integration tests and embedders.
 
+pub mod auth;
 pub mod config;
 pub mod cost;
 pub mod db;
@@ -23,6 +24,7 @@ pub struct AppState {
     pub health: providers::HealthRegistry,
     pub db: db::Db,
     pub metadata: metadata::MetadataStore,
+    pub key_store: auth::KeyStore,
 }
 
 impl AppState {
@@ -32,6 +34,7 @@ impl AppState {
         health: providers::HealthRegistry,
         db: db::Db,
         metadata: metadata::MetadataStore,
+        key_store: auth::KeyStore,
     ) -> Self {
         Self {
             pipeline: Arc::new(pipeline),
@@ -39,6 +42,7 @@ impl AppState {
             health,
             db,
             metadata,
+            key_store,
         }
     }
 }

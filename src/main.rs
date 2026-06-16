@@ -3,6 +3,7 @@
 use anyhow::Context;
 use std::sync::Arc;
 use token_dealer::{
+    auth::{KeyStore, MasterKey},
     config::ConfigService,
     db::Db,
     metadata::MetadataStore,
@@ -55,8 +56,10 @@ async fn main() -> anyhow::Result<()> {
     token_dealer::metadata::spawn_refresher(metadata.clone());
 
     let health = HealthRegistry::new();
-    let pipeline = Pipeline::new(registry, config.clone(), http, db.clone(), health.clone());
-    let state = AppState::new(pipeline, config, health, db, metadata);
+    let master = MasterKey::from_env_or_generate()?;
+    let key_store = KeyStore::new(db.clone(), &master);
+    let pipeline = Pipeline::new(registry, config.clone(), http, db.clone(), health.clone(), key_store.clone());
+    let state = AppState::new(pipeline, config, health, db, metadata, key_store);
 
     let app = build_router(state);
     let listener = tokio::net::TcpListener::bind(&bind)

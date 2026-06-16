@@ -155,6 +155,47 @@ pub async fn save_config(State(state): State<AppState>) -> Response {
 }
 
 #[derive(Deserialize)]
+pub struct SetKeyRequest {
+    pub key: String,
+}
+
+pub async fn set_key(
+    State(state): State<AppState>,
+    axum::extract::Path(provider_id): axum::extract::Path<String>,
+    Json(body): Json<SetKeyRequest>,
+) -> Response {
+    if body.key.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "key required"})),
+        )
+            .into_response();
+    }
+    match state.key_store.set(&provider_id, &body.key).await {
+        Ok(_) => (StatusCode::OK, Json(json!({"status": "stored", "provider": provider_id}))).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("store failed: {e}")})),
+        )
+            .into_response(),
+    }
+}
+
+pub async fn delete_key(
+    State(state): State<AppState>,
+    axum::extract::Path(provider_id): axum::extract::Path<String>,
+) -> Response {
+    match state.key_store.delete(&provider_id).await {
+        Ok(_) => (StatusCode::OK, Json(json!({"status": "deleted", "provider": provider_id}))).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("delete failed: {e}")})),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Deserialize)]
 pub struct AddRuleRequest {
     /// Optional index — when present, replaces the rule at that index
     /// instead of appending.

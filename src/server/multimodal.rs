@@ -14,7 +14,7 @@ use axum::{
 };
 use serde_json::{json, Value};
 
-use crate::providers::registry::resolve_key;
+use crate::auth::resolve as resolve_key_async;
 
 /// Shared handler for image / audio / video. `path_suffix` is the
 /// OpenAI-style endpoint, e.g. `/v1/images/generations`.
@@ -71,7 +71,7 @@ pub async fn passthrough(
         .iter()
         .find(|p| p.id == provider_id)
         .and_then(|p| p.key.as_deref());
-    let key = resolve_key(&provider_id, cfg_key);
+    let key = resolve_key_async(&state.key_store, &provider_id, cfg_key).await;
     if key.is_empty() {
         return (
             StatusCode::BAD_REQUEST,

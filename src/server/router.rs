@@ -10,8 +10,8 @@ use super::ui::{
 };
 use super::AppState;
 use super::admin::{
-    add_provider, add_rule, delete_rule, list_provider_types, remove_provider, save_config,
-    update_tier, validate_provider_type,
+    add_provider, add_rule, delete_key, delete_rule, list_provider_types, remove_provider,
+    save_config, set_key, update_tier, validate_provider_type,
 };
 use axum::{
     middleware::from_fn_with_state,
@@ -50,6 +50,7 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/admin/rules", post(add_rule))
         .route("/admin/rules/:index", post(delete_rule).delete(delete_rule))
+        .route("/admin/keys/:provider_id", post(set_key).delete(delete_key))
         // WebUI
         .route("/", get(index))
         .route("/ui", get(index))

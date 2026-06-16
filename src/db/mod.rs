@@ -101,6 +101,14 @@ fn run_migrations(conn: &Connection) -> anyhow::Result<()> {
             cooldown_until       DATETIME,
             updated_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
+
+        CREATE TABLE IF NOT EXISTS provider_credentials (
+            provider_id TEXT PRIMARY KEY,
+            ciphertext  BLOB NOT NULL,
+            nonce       BLOB NOT NULL,
+            created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
         "#,
     )?;
     // Ensure a meta row exists for migrations tracking. We don't

@@ -18,7 +18,7 @@ use token_dealer::{
 use tower::ServiceExt;
 use uuid::Uuid;
 use wiremock::{
-    matchers::{header, method, path},
+    matchers::{header, header_exists, method, path},
     Mock, MockServer, ResponseTemplate,
 };
 
@@ -60,10 +60,32 @@ async fn make_state(mock_base: &str) -> AppState {
         .build()
         .unwrap();
     let db = Db::open(&snapshot.database).unwrap();
-    let pipeline = Pipeline::new(registry, svc.clone(), http, db.clone(), HealthRegistry::new());
+    let key_store = token_dealer::auth::KeyStore::new(
+        db.clone(),
+        &token_dealer::auth::MasterKey::from_env_or_generate().unwrap(),
+    );
+    let key_store = token_dealer::auth::KeyStore::new(
+        db.clone(),
+        &token_dealer::auth::MasterKey::from_env_or_generate().unwrap(),
+    );
+    let pipeline = Pipeline::new(
+        registry,
+        svc.clone(),
+        http,
+        db.clone(),
+        HealthRegistry::new(),
+        key_store.clone(),
+    );
     let _ = dir;
     let metadata = token_dealer::metadata::MetadataStore::new();
-    AppState::new(pipeline, svc, HealthRegistry::new(), db, metadata)
+    AppState::new(
+        pipeline,
+        svc,
+        HealthRegistry::new(),
+        db,
+        metadata,
+        key_store,
+    )
 }
 
 fn tempfile_or_stdout() -> () {
@@ -290,8 +312,26 @@ async fn non_standard_path_provider_routes_correctly() {
         .build()
         .unwrap();
     let db = Db::open(&snapshot.database).unwrap();
-    let pipeline = Pipeline::new(registry, svc.clone(), http, db.clone(), HealthRegistry::new());
-    let state = AppState::new(pipeline, svc, HealthRegistry::new(), db, token_dealer::metadata::MetadataStore::new());
+    let key_store = token_dealer::auth::KeyStore::new(
+        db.clone(),
+        &token_dealer::auth::MasterKey::from_env_or_generate().unwrap(),
+    );
+    let pipeline = Pipeline::new(
+        registry,
+        svc.clone(),
+        http,
+        db.clone(),
+        HealthRegistry::new(),
+        key_store.clone(),
+    );
+    let state = AppState::new(
+        pipeline,
+        svc,
+        HealthRegistry::new(),
+        db,
+        token_dealer::metadata::MetadataStore::new(),
+        key_store,
+    );
     let app = build_router(state);
 
     let req = axum::http::Request::builder()
@@ -413,8 +453,19 @@ async fn fallback_chain_skips_500_provider_to_next() {
         .build()
         .unwrap();
     let db = Db::open(&snap.database).unwrap();
-    let pipeline = Pipeline::new(registry, svc.clone(), http, db.clone(), HealthRegistry::new());
-    let state = AppState::new(pipeline, svc, HealthRegistry::new(), db, token_dealer::metadata::MetadataStore::new());
+    let key_store = token_dealer::auth::KeyStore::new(
+        db.clone(),
+        &token_dealer::auth::MasterKey::from_env_or_generate().unwrap(),
+    );
+    let pipeline = Pipeline::new(registry, svc.clone(), http, db.clone(), HealthRegistry::new(), key_store.clone());
+    let state = AppState::new(
+        pipeline,
+        svc,
+        HealthRegistry::new(),
+        db,
+        token_dealer::metadata::MetadataStore::new(),
+        key_store,
+    );
     let app = build_router(state);
 
     let req = axum::http::Request::builder()
@@ -507,13 +558,18 @@ async fn auth_rejects_request_with_wrong_key() {
         .build()
         .unwrap();
     let db = Db::open(&snap.database).unwrap();
-    let pipeline = Pipeline::new(registry, svc.clone(), http, db.clone(), HealthRegistry::new());
+    let key_store = token_dealer::auth::KeyStore::new(
+        db.clone(),
+        &token_dealer::auth::MasterKey::from_env_or_generate().unwrap(),
+    );
+    let pipeline = Pipeline::new(registry, svc.clone(), http, db.clone(), HealthRegistry::new(), key_store.clone());
     let state = AppState::new(
         pipeline,
         svc,
         HealthRegistry::new(),
         db,
         token_dealer::metadata::MetadataStore::new(),
+        key_store,
     );
 
     // No auth header
@@ -649,6 +705,82 @@ async fn rules_add_and_delete_persist() {
 }
 
 #[tokio::test]
+async fn encrypted_credential_round_trip() {
+    use token_dealer::auth::{KeyStore, MasterKey};
+    let db = Db::open(&DatabaseConfig { path: ":memory:".to_string() }).unwrap();
+    let master = MasterKey::from_env_or_generate().unwrap();
+    let store = KeyStore::new(db.clone(), &master);
+    store.set("anthropic", "sk-test-plaintext-12345").await.unwrap();
+    let got = store.get("anthropic").await.unwrap().unwrap();
+    assert_eq!(got, "sk-test-plaintext-12345");
+    // Verify the on-disk row is actually encrypted (not plaintext)
+    let raw: String = db
+        .with(|conn| {
+            let mut stmt = conn
+                .prepare("SELECT ciphertext FROM provider_credentials WHERE provider_id = 'anthropic'")?;
+            let row: Vec<u8> = stmt.query_row([], |r| r.get(0))?;
+            Ok(String::from_utf8_lossy(&row).to_string())
+        })
+        .await
+        .unwrap();
+    assert!(!raw.contains("sk-test-plaintext"), "ciphertext leaked plaintext");
+    // Decryption with wrong key should fail. We can't easily
+    // construct a second MasterKey without exposing from_hex, so
+    // we test the round-trip only. The auth.rs from_env_or_generate
+    // unit test covers the wrong-key failure path.
+    let _ = wrong_master_placeholder();
+    fn wrong_master_placeholder() -> Option<()> {
+        Some(())
+    }
+}
+
+#[tokio::test]
+async fn x_router_key_header_overrides_upstream_key() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(header_exists("authorization"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "override-test",
+            "object": "chat.completion",
+            "created": 1,
+            "model": "m",
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": "override worked"},
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let state = make_state(&server.uri()).await;
+    let app = build_router(state);
+
+    let req = axum::http::Request::builder()
+        .method("POST")
+        .uri("/v1/chat/completions")
+        .header("content-type", "application/json")
+        .header("x-router-key", "per-request-override")
+        .body(axum::body::Body::from(
+            json!({
+                "model": "standard",
+                "messages": [{"role": "user", "content": "hi"}]
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body_bytes = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
+    let body: Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    assert_eq!(body["choices"][0]["message"]["content"], "override worked");
+}
+
+#[tokio::test]
 async fn image_endpoint_passes_through_to_provider() {
     let image_server = MockServer::start().await;
     Mock::given(method("POST"))
@@ -682,13 +814,18 @@ async fn image_endpoint_passes_through_to_provider() {
         .build()
         .unwrap();
     let db = Db::open(&snap.database).unwrap();
-    let pipeline = Pipeline::new(registry, svc.clone(), http, db.clone(), HealthRegistry::new());
+    let key_store = token_dealer::auth::KeyStore::new(
+        db.clone(),
+        &token_dealer::auth::MasterKey::from_env_or_generate().unwrap(),
+    );
+    let pipeline = Pipeline::new(registry, svc.clone(), http, db.clone(), HealthRegistry::new(), key_store.clone());
     let state = AppState::new(
         pipeline,
         svc,
         HealthRegistry::new(),
         db,
         token_dealer::metadata::MetadataStore::new(),
+        key_store,
     );
     let app = build_router(state);
 

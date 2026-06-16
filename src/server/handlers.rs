@@ -94,6 +94,23 @@ pub async fn chat_completions(
     let model_id = routed.route.model_id.clone();
     let request_id = routed.request_id;
 
+    // Per-request key override: `X-Router-Key: <key>` bypasses the
+    // resolved key. Used to swap in a different upstream key without
+    // touching the config (e.g. tenant-specific billing, ad-hoc
+    // testing). The inbound Authorization header is still validated
+    // by the auth middleware — this only swaps the UPSTREAM key.
+    let mut routed = routed;
+    if let Some(override_key) = headers.get("x-router-key").and_then(|v| v.to_str().ok()) {
+        if !override_key.is_empty() {
+            tracing::info!(
+                request_id = %request_id,
+                provider = %provider_id,
+                "using X-Router-Key override for upstream"
+            );
+            routed.key = override_key.to_string();
+        }
+    }
+
     if routed.canonical.stream {
         // Streaming path
         let stream_res = state.pipeline.stream(routed).await;
@@ -124,9 +141,31 @@ pub async fn chat_completions(
 
         use axum::response::sse::{Event, KeepAlive, Sse};
         let model_id_for_body = model_id.clone();
+        let request_budget_ms = state
+            .pipeline
+            .config
+            .snapshot()
+            .await
+            .retry
+            .request_budget_ms;
+        let started = std::time::Instant::now();
         let body = stream! {
             tokio::pin!(chunk_stream);
             while let Some(item) = chunk_stream.next().await {
+                // Mid-stream budget enforcement. Emits a terminal
+                // error chunk and closes the stream cleanly so the
+                // client gets a proper SSE terminator.
+                if started.elapsed().as_millis() as u64 > request_budget_ms {
+                    tracing::warn!(
+                        elapsed_ms = started.elapsed().as_millis() as u64,
+                        budget_ms = request_budget_ms,
+                        "stream exceeded request budget; closing"
+                    );
+                    yield Ok(Event::default()
+                        .event("error")
+                        .data(json!({"error": "request budget exceeded"}).to_string()));
+                    break;
+                }
                 match item {
                     Ok(chunk) => {
                         let mut c = chunk;
