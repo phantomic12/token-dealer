@@ -2,7 +2,10 @@
 //! Public surface for integration tests and embedders.
 
 pub mod config;
+pub mod cost;
+pub mod db;
 pub mod error;
+pub mod log;
 pub mod providers;
 pub mod proxy;
 pub mod routing;
@@ -17,6 +20,7 @@ pub struct AppState {
     pub pipeline: Arc<proxy::pipeline::Pipeline>,
     pub config: config::ConfigService,
     pub health: providers::HealthRegistry,
+    pub db: db::Db,
 }
 
 impl AppState {
@@ -24,11 +28,13 @@ impl AppState {
         pipeline: proxy::pipeline::Pipeline,
         config: config::ConfigService,
         health: providers::HealthRegistry,
+        db: db::Db,
     ) -> Self {
         Self {
             pipeline: Arc::new(pipeline),
             config,
             health,
+            db,
         }
     }
 }

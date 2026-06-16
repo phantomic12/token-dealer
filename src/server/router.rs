@@ -1,10 +1,11 @@
 //! Axum Router. Wires the middleware stack and the handlers.
 
+use super::auth;
 use super::handlers::{chat_completions, health, list_models, reload_config};
 use super::middleware::request_id_layer;
 use super::ui::{
-    dashboard, index, providers_page, providers_partial, tiers_page, ui_remove_provider,
-    ui_style,
+    dashboard, index, logs_page, providers_page, providers_partial, tiers_page,
+    ui_remove_provider, ui_style,
 };
 use super::AppState;
 use super::admin::{
@@ -12,6 +13,7 @@ use super::admin::{
     validate_provider_type,
 };
 use axum::{
+    middleware::from_fn_with_state,
     routing::{get, post},
     Router,
 };
@@ -49,9 +51,11 @@ pub fn build_router(state: AppState) -> Router {
         .route("/ui/providers", get(providers_page))
         .route("/ui/partials/providers", get(providers_partial))
         .route("/ui/tiers", get(tiers_page))
+        .route("/ui/logs", get(logs_page))
         .route("/ui/style.css", get(ui_style))
         .route("/admin/ui/remove/:id", post(ui_remove_provider))
-        .with_state(state)
+        .with_state(state.clone())
+        .layer(from_fn_with_state(state.clone(), auth::middleware))
         .layer(TraceLayer::new_for_http())
         .layer(request_id_layer())
 }

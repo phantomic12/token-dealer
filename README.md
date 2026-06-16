@@ -9,6 +9,24 @@ High-performance LLM routing proxy in Rust. Sits between clients and providers, 
 - **SSE streaming** with OpenAI-shape chunks + `data: [DONE]` terminator
 - **X-Router-\* response headers** — `x-router-provider`, `x-router-model`, `x-router-tier`, `x-router-request-id`
 
+## Auth
+
+Set `[auth] enabled = true` and add one or more `[[auth.keys]]` to require credentials.
+
+```
+GET  /v1/models             Authorization: Bearer <key>
+POST /v1/chat/completions   Authorization: Bearer <key>
+GET  /ui/, /ui/providers    Basic Auth (browser prompts for password, leave username blank)
+POST /admin/*               Basic Auth
+GET  /health                public (always)
+```
+
+Same key table for both Bearer and Basic. Set `key = "${ROUTER_API_KEY}"` to load from the environment. Comparison is constant-time.
+
+## What's left
+
+Medium value: streaming for the generic adapter, circuit breaker probe, models.dev sync, user rules engine editor in the UI, cost-calculation refinements, image/audio/video endpoints. Nice to have: per-modality routing, inbound per-tier key overrides, request budget enforcement mid-stream.
+
 ## WebUI
 
 Server-rendered HTML + HTMX. No build step, no Node toolchain — the binary serves it directly. Open `http://localhost:8080/ui/` in a browser.

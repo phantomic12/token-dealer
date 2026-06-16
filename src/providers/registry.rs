@@ -70,6 +70,14 @@ impl ProviderRegistry {
         Ok(())
     }
 
+    /// Acquire a read lock for direct map access. Returned guard
+    /// gives synchronous access to the providers map.
+    pub async fn read<'a>(
+        &'a self,
+    ) -> tokio::sync::RwLockReadGuard<'a, HashMap<String, Arc<dyn ProviderAdapter>>> {
+        self.providers.read().await
+    }
+
     /// Live remove. Returns true if a provider was actually removed.
     pub async fn remove(&self, id: &str) -> bool {
         let mut g = self.providers.write().await;

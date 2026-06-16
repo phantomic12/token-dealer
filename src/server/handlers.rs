@@ -73,15 +73,14 @@ pub async fn chat_completions(
     };
 
     let scorer = Scorer::new(state.pipeline.config.clone());
-    let (tier, override_from_scorer) = scorer
+    let score = scorer
         .score(ScoringContext {
             inbound: &pre.request,
             headers: &headers,
         })
         .await;
-    let tier = inbound_tier_hint.unwrap_or(tier);
-    let model_override = model_override.or(override_from_scorer);
-
+    let tier = inbound_tier_hint.unwrap_or(score.tier);
+    let model_override = model_override.or(score.model_override);
     let routed = match state
         .pipeline
         .route(pre.request, model_override, tier)

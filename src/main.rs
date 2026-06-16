@@ -4,6 +4,7 @@ use anyhow::Context;
 use std::sync::Arc;
 use token_dealer::{
     config::ConfigService,
+    db::Db,
     providers::{HealthRegistry, ProviderRegistry},
     proxy::pipeline::Pipeline,
     server::build_router,
@@ -49,9 +50,11 @@ async fn main() -> anyhow::Result<()> {
         .build()
         .context("building reqwest client")?;
 
-    let pipeline = Pipeline::new(registry, config.clone(), http);
+    let db = Db::open(&snapshot.database).context("opening request log db")?;
+
+    let pipeline = Pipeline::new(registry, config.clone(), http, db.clone());
     let health = HealthRegistry::new();
-    let state = AppState::new(pipeline, config, health);
+    let state = AppState::new(pipeline, config, health, db);
 
     let app = build_router(state);
     let listener = tokio::net::TcpListener::bind(&bind)

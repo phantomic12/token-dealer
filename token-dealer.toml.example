@@ -10,6 +10,9 @@
 bind = "0.0.0.0:8080"
 log_level = "info"
 
+[database]
+path = "/data/router.db"
+
 [auth]
 enabled = false
 

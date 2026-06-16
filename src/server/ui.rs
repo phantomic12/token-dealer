@@ -136,6 +136,7 @@ fn layout(active: &str, title: &str, body: &str, flash: Option<&str>) -> String 
     {nav_dashboard}
     {nav_providers}
     {nav_tiers}
+    {nav_logs}
   </nav>
   <div class="actions">
     <button class="secondary" hx-post="/admin/config/save" hx-swap="none" hx-on::after-request="document.getElementById('flash')?.remove();let f=document.createElement('div');f.id='flash';f.className='flash success';f.textContent='saved to disk';document.querySelector('main').prepend(f);setTimeout(()=>f.remove(),3000)">Save to disk</button>
@@ -152,6 +153,7 @@ fn layout(active: &str, title: &str, body: &str, flash: Option<&str>) -> String 
         nav_dashboard = nav("/", "Dashboard", "dashboard"),
         nav_providers = nav("/ui/providers", "Providers", "providers"),
         nav_tiers = nav("/ui/tiers", "Tiers", "tiers"),
+        nav_logs = nav("/ui/logs", "Logs", "logs"),
         flash_html = flash_html,
         body = body,
     )
@@ -397,18 +399,99 @@ pub async fn ui_remove_provider(
 pub async fn tiers_page(State(state): State<AppState>) -> Response {
     let snap = state.config.snapshot().await;
     let body = format!(
-        r##"
+        r#"
 <h1>Tiers</h1>
 <p class="dim">Per-tier primary model + fallbacks. Requests with <code>model: "tier"</code> or <code>x-router-tier: tier</code> route to that tier's primary; the first model in <code>fallbacks</code> is tried if the primary fails.</p>
 <div class="notice">Edit the primary inline, click Save. "Save to disk" in the top right flushes to <code class="kbd">{path}</code>.</div>
 
 {list}
-"##,
+"#,
         path = state.config.path().display(),
         list = render_tiers_list(&snap.tiers),
     );
 
     Html(layout("tiers", "Tiers", &body, None)).into_response()
+}
+
+pub async fn logs_page(State(state): State<AppState>) -> Response {
+    let filter = crate::db::queries::LogFilter {
+        limit: 100,
+        ..Default::default()
+    };
+    let rows = match state
+        .db
+        .with(move |conn| {
+            crate::db::queries::list_requests(conn, &filter)
+                .map_err(|e| anyhow::anyhow!("list logs failed: {e}"))
+        })
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            return Html(layout(
+                "logs",
+                "Logs",
+                &format!(r#"<div class="flash error">DB error: {}</div>"#, e),
+                None,
+            ))
+            .into_response();
+        }
+    };
+
+    let body = format!(
+        r#"
+<h1>Logs</h1>
+<p class="dim">Most recent {n} requests. For older data, query the SQLite file directly: <code class="kbd">sqlite3 /data/router.db</code></p>
+
+{rows_html}
+"#,
+        n = rows.len(),
+        rows_html = render_logs_rows(&rows),
+    );
+
+    Html(layout("logs", "Logs", &body, None)).into_response()
+}
+
+fn render_logs_rows(rows: &[crate::db::queries::RequestRow]) -> String {
+    if rows.is_empty() {
+        return r#"<div class="center-empty">No requests logged yet. Make a chat completion to populate this view.</div>"#.to_string();
+    }
+    let mut out = String::new();
+    for r in rows {
+        let cost = r
+            .cost_usd
+            .map(|c| format!("${:.5}", c))
+            .unwrap_or_else(|| "—".to_string());
+        let _ = write!(
+            out,
+            r#"<tr>
+              <td><code class="kbd">{ts}</code></td>
+              <td><span class="badge healthy">{tier}</span></td>
+              <td><code>{provider}/{model}</code></td>
+              <td>{in_tok} → {out_tok}</td>
+              <td>{cost}</td>
+              <td>{latency}ms</td>
+              <td>{fallback_count}</td>
+              <td>{finish}</td>
+            </tr>"#,
+            ts = html_escape(&r.created_at),
+            tier = html_escape(&r.tier),
+            provider = html_escape(&r.routed_provider),
+            model = html_escape(&r.routed_model),
+            in_tok = r.input_tokens.unwrap_or(0),
+            out_tok = r.output_tokens.unwrap_or(0),
+            cost = cost,
+            latency = r.total_latency_ms,
+            fallback_count = r.fallback_count,
+            finish = html_escape(r.finish_reason.as_deref().unwrap_or("—")),
+        );
+    }
+    format!(
+        r#"<table>
+  <thead><tr><th>Time</th><th>Tier</th><th>Route</th><th>Tokens (in→out)</th><th>Cost</th><th>Latency</th><th>Fallbacks</th><th>Finish</th></tr></thead>
+  <tbody>{out}</tbody>
+</table>"#
+    )
 }
 
 fn render_tiers_list(
