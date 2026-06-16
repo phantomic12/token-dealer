@@ -4,12 +4,10 @@ FROM rust:1.86-slim-bookworm AS builder
 
 WORKDIR /build
 
-# Cache deps separately
-COPY Cargo.toml Cargo.lock* ./
-RUN mkdir -p src && echo "fn main(){}" > src/main.rs && echo "" > src/lib.rs && \
-    cargo build --release --bin token-dealer && \
-    rm -rf src target/release/token-dealer target/release/deps/token-dealer-*
-
+# Full source copy + single clean build. The dep-cache trick
+# (empty stub + rm + real copy + rebuild) was leaving the stub
+# binary in the final image because cargo didn't see the
+# real source as invalidating the cached artifact.
 COPY . .
 RUN cargo build --release --bin token-dealer
 
