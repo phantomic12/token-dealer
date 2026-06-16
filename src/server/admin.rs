@@ -195,6 +195,30 @@ pub async fn delete_key(
     }
 }
 
+/// Store a refresh token for an OAuth-based provider. POST
+/// /admin/oauth/:provider_id/refresh with `{"refresh_token": "..."}`.
+/// The pipeline will auto-refresh on next use. The manifest's OAuth
+/// config (token URL + client ID) is used automatically for
+/// github-copilot, responses, and kiro.
+pub async fn set_oauth_refresh(
+    State(state): State<AppState>,
+    axum::extract::Path(provider_id): axum::extract::Path<String>,
+    Json(body): Json<SetKeyRequest>,
+) -> Response {
+    match state.oauth.set_refresh_token(&provider_id, &body.key).await {
+        Ok(_) => (
+            StatusCode::OK,
+            Json(json!({"status": "refresh token stored", "provider": provider_id})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("store failed: {e}")})),
+        )
+            .into_response(),
+    }
+}
+
 #[derive(Deserialize)]
 pub struct AddRuleRequest {
     /// Optional index — when present, replaces the rule at that index

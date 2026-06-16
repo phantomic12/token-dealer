@@ -9,6 +9,7 @@ use axum::{
     http::{header, StatusCode},
     response::{Html, IntoResponse, Response},
 };
+use serde::Deserialize;
 use std::fmt::Write;
 
 /// Render a ProviderType as its kebab-case string form (e.g.
@@ -157,6 +158,23 @@ form .actions { margin-top: 16px; display: flex; gap: 8px; align-items: center; 
   border: 1px solid rgba(63, 185, 80, 0.3); }
 .test-result.error { background: rgba(248, 81, 73, 0.15); color: var(--red);
   border: 1px solid rgba(248, 81, 73, 0.3); }
+.playground-response { margin-top: 12px; min-height: 100px; }
+.playground-response-meta { display: flex; gap: 12px; align-items: center;
+  padding: 8px 12px; background: var(--bg-elev); border-radius: 5px;
+  margin-bottom: 8px; font-size: 13px; }
+.playground-response-body { background: var(--bg-elev); border: 1px solid var(--border);
+  border-radius: 5px; padding: 14px; font-family: var(--mono); font-size: 13px;
+  white-space: pre-wrap; word-wrap: break-word; max-height: 500px;
+  overflow-y: auto; }
+.playground-error { background: rgba(248, 81, 73, 0.15); color: var(--red);
+  border: 1px solid rgba(248, 81, 73, 0.3); padding: 10px 14px;
+  border-radius: 5px; font-family: var(--mono); font-size: 13px; }
+.htmx-indicator { opacity: 0; transition: opacity 200ms; }
+.htmx-indicator.htmx-request { opacity: 1; }
+form textarea { background: var(--bg); color: var(--text);
+  border: 1px solid var(--border); border-radius: 5px; padding: 8px 10px;
+  font-family: var(--mono); font-size: 13px; width: 100%;
+  resize: vertical; }
 .flash { padding: 10px 14px; border-radius: 5px; margin-bottom: 16px;
   font-size: 13px; }
 .flash.success { background: rgba(63, 185, 80, 0.15); color: var(--green);
@@ -204,6 +222,7 @@ fn layout(active: &str, title: &str, body: &str, flash: Option<&str>) -> String 
     {nav_tiers}
     {nav_rules}
     {nav_logs}
+    {nav_playground}
   </nav>
   <div class="actions">
     <button class="secondary" hx-post="/admin/config/save" hx-swap="none" hx-on::after-request="document.getElementById('flash')?.remove();let f=document.createElement('div');f.id='flash';f.className='flash success';f.textContent='saved to disk';document.querySelector('main').prepend(f);setTimeout(()=>f.remove(),3000)">Save to disk</button>
@@ -222,6 +241,7 @@ fn layout(active: &str, title: &str, body: &str, flash: Option<&str>) -> String 
         nav_tiers = nav("/ui/tiers", "Tiers", "tiers"),
         nav_logs = nav("/ui/logs", "Logs", "logs"),
         nav_rules = nav("/ui/rules", "Rules", "rules"),
+        nav_playground = nav("/ui/playground", "Playground", "playground"),
         flash_html = flash_html,
         body = body,
     )
@@ -284,10 +304,259 @@ pub async fn dashboard(State(state): State<AppState>) -> Response {
 
 pub async fn ui_style() -> Response {
     (
-        [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
+        [(axum::http::header::CONTENT_TYPE, "text/css; charset=utf-8")],
         CSS,
     )
         .into_response()
+}
+
+/// Interactive playground. GET renders a form (model picker +
+/// system prompt + temperature + max_tokens + message). POST
+/// dispatches a non-streaming chat completion through the same
+/// pipeline the public API uses, returns the response for HTMX
+/// innerHTML swap. Streaming is intentionally not supported here
+/// — the public API at /v1/chat/completions is the streaming path.
+pub async fn playground_page(State(state): State<AppState>) -> Response {
+    let snap = state.config.snapshot().await;
+    let model_options = render_model_options(&snap.providers);
+    let body = format!(
+        r##"
+<h1>Playground</h1>
+<p class="dim">Test a model end-to-end. Goes through the same routing, fallback, and auth pipeline as the public API. Use the <code>X-Router-Key</code> header to swap in a different upstream key (the form below uses the key configured in <code>token-dealer.toml</code>).</p>
+
+<div id="playground">
+  <form hx-post="/ui/playground" hx-target="#playground-response" hx-swap="innerHTML" hx-indicator="#playground-spinner">
+    <div class="row three">
+      <div>
+        <label>Model</label>
+        <select name="model">{model_options}</select>
+      </div>
+      <div>
+        <label>Temperature (0–2)</label>
+        <input name="temperature" type="number" step="0.1" min="0" max="2" value="1" />
+      </div>
+      <div>
+        <label>Max tokens</label>
+        <input name="max_tokens" type="number" min="1" max="200000" placeholder="(no limit)" />
+      </div>
+    </div>
+    <label>System prompt (optional)</label>
+    <textarea name="system" rows="2" placeholder="You are a helpful assistant."></textarea>
+    <label>Message</label>
+    <textarea name="message" rows="6" required placeholder="What is the capital of France?"></textarea>
+    <div class="actions">
+      <button type="submit">Send</button>
+      <span id="playground-spinner" class="htmx-indicator">…</span>
+      <span class="muted">Non-streaming. Response renders below.</span>
+    </div>
+  </form>
+
+  <h2 style="margin-top: 24px;">Response</h2>
+  <div id="playground-response" class="playground-response">
+    <p class="dim">No response yet. Pick a model and send a message.</p>
+  </div>
+</div>
+"##
+    );
+    Html(layout("playground", "Playground", &body, None)).into_response()
+}
+
+fn render_model_options(providers: &[crate::config::types::ProviderConfig]) -> String {
+    let mut out = String::new();
+    for p in providers {
+        let _ = write!(
+            out,
+            r##"<option value="{id}">{id} → {model}</option>"##,
+            id = p.id,
+            model = p.default_model.as_deref().unwrap_or("(no default)"),
+        );
+    }
+    if out.is_empty() {
+        out.push_str(r##"<option disabled>No providers configured</option>"##);
+    }
+    out
+}
+
+#[derive(Deserialize)]
+pub struct PlaygroundForm {
+    pub model: String,
+    pub system: Option<String>,
+    pub message: String,
+    pub temperature: Option<f32>,
+    pub max_tokens: Option<u32>,
+}
+
+pub async fn playground_send(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    axum::Form(form): axum::Form<PlaygroundForm>,
+) -> Response {
+    use crate::schema::canonical::{ContentBlock, Role};
+    use crate::schema::inbound::{InboundMessage, InboundRequest};
+
+    // Build an inbound request from the form. System prompt is
+    // prepended as a system-role message (InboundRequest doesn't
+    // have a top-level system field).
+    let model = form.model.clone();
+    let mut messages: Vec<InboundMessage> = Vec::new();
+    if let Some(sys) = &form.system {
+        if !sys.is_empty() {
+            messages.push(InboundMessage {
+                role: "system".to_string(),
+                content: serde_json::json!(sys),
+                name: None,
+                tool_call_id: None,
+                tool_calls: None,
+            });
+        }
+    }
+    messages.push(InboundMessage {
+        role: "user".to_string(),
+        content: serde_json::json!(form.message.clone()),
+        name: None,
+        tool_call_id: None,
+        tool_calls: None,
+    });
+
+    let (provider_id, model_id) = match model.split_once('/') {
+        Some((p, m)) => (p.to_string(), m.to_string()),
+        None => {
+            // Treat as tier name
+            let cfg = state.config.snapshot().await;
+            let tier = crate::schema::canonical::Tier::parse(&model)
+                .or_else(|| cfg.tiers.get(&model).map(|_| crate::schema::canonical::Tier::Standard));
+            let tier = match tier {
+                Some(t) => t,
+                None => {
+                    return Html(format!(
+                        r##"<div class="playground-error">unknown model ref: {model}</div>"##
+                    ))
+                    .into_response();
+                }
+            };
+            let route = match state
+                .pipeline
+                .selector
+                .route_tier(&cfg, tier)
+                .await
+            {
+                Some(r) => r,
+                None => {
+                    return Html(format!(
+                        r##"<div class="playground-error">no primary for tier {tier:?}</div>"##
+                    ))
+                    .into_response();
+                }
+            };
+            (route.provider_id, route.model_id)
+        }
+    };
+
+    let request_id = uuid::Uuid::new_v4();
+    let inbound = InboundRequest {
+        model: model.clone(),
+        messages,
+        max_tokens: form.max_tokens,
+        temperature: form.temperature,
+        top_p: None,
+        stop: None,
+        stream: false,
+        tools: None,
+        tool_choice: None,
+    };
+
+    // The pipeline needs a canonical model_ref for routing. Use the
+    // user-supplied "provider/model" if present, otherwise just
+    // model_id.
+    let canonical_model_ref = model.clone();
+    let canonical = match inbound.into_canonical(
+        crate::schema::canonical::Tier::Standard,
+        model_id.clone(),
+        provider_id.clone(),
+        request_id,
+    ) {
+        Ok(c) => c,
+        Err(e) => {
+            return Html(format!(
+                r##"<div class="playground-error">build failed: {e}</div>"##
+            ))
+            .into_response();
+        }
+    };
+    // Overwrite the model ref with the user's input (so the
+    // explicit `provider/model` path is preserved).
+    let mut canonical = canonical;
+    canonical.selected_model = canonical_model_ref;
+
+    // Resolve the key (respecting X-Router-Key override like the
+    // public chat path).
+    let mut routed = crate::proxy::pipeline::RoutingOutput {
+        canonical,
+        route: crate::routing::selector::SelectedRoute {
+            provider_id: provider_id.clone(),
+            model_id: model_id.clone(),
+        },
+        key: String::new(),
+        request_id,
+    };
+    let cfg = state.config.snapshot().await;
+    let cfg_key = cfg
+        .providers
+        .iter()
+        .find(|p| p.id == provider_id)
+        .and_then(|p| p.key.as_deref());
+    let resolved = crate::auth::resolve(&state.key_store, &provider_id, cfg_key).await;
+    if let Some(override_key) = headers.get("x-router-key").and_then(|v| v.to_str().ok()) {
+        if !override_key.is_empty() {
+            routed.key = override_key.to_string();
+        } else {
+            routed.key = resolved;
+        }
+    } else {
+        routed.key = resolved;
+    }
+
+    let started = std::time::Instant::now();
+    let result = state.pipeline.complete(routed).await;
+    let elapsed = started.elapsed().as_millis();
+
+    match result {
+        Ok(resp) => {
+            let content = resp
+                .content
+                .iter()
+                .filter_map(|b| match b {
+                    ContentBlock::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("");
+            let model = resp.model;
+            let provider = resp.provider;
+            let tokens = format!(
+                "{} in / {} out",
+                resp.usage.input_tokens, resp.usage.output_tokens
+            );
+            let html = format!(
+                r##"<div class="playground-response-meta">
+                    <span class="badge healthy">{provider}</span>
+                    <span><code>{model}</code></span>
+                    <span class="muted">{tokens} · {elapsed}ms</span>
+                  </div>
+                  <pre class="playground-response-body">{content}</pre>"##,
+                provider = html_escape(&provider),
+                model = html_escape(&model),
+                tokens = tokens,
+                elapsed = elapsed,
+                content = html_escape(&content),
+            );
+            Html(html).into_response()
+        }
+        Err(e) => Html(format!(
+            r##"<div class="playground-error">error: {e}</div>"##
+        ))
+        .into_response(),
+    }
 }
 
 pub async fn providers_page(State(state): State<AppState>) -> Response {

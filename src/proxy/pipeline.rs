@@ -26,6 +26,7 @@ pub struct Pipeline {
     pub db: crate::db::Db,
     pub health: crate::providers::HealthRegistry,
     pub key_store: crate::auth::KeyStore,
+    pub oauth: crate::oauth::OAuthManager,
 }
 
 pub struct RoutingOutput {
@@ -43,6 +44,7 @@ impl Pipeline {
         db: crate::db::Db,
         health: crate::providers::HealthRegistry,
         key_store: crate::auth::KeyStore,
+        oauth: crate::oauth::OAuthManager,
     ) -> Self {
         let selector = Selector::new(registry.clone());
         Self {
@@ -53,6 +55,7 @@ impl Pipeline {
             db,
             health,
             key_store,
+            oauth,
         }
     }
 
@@ -96,7 +99,32 @@ impl Pipeline {
                 .find(|p| p.id == route.provider_id)
                 .and_then(|p| p.key.as_deref())
                 .or(tier_override);
-            resolve_key(&self.key_store, &route.provider_id, cfg_key).await
+            // If the provider has OAuth config, prefer the access token
+            // from the OAuth manager. The user-facing `key` field is
+            // treated as a refresh token in that case.
+            let resolved = resolve_key(&self.key_store, &route.provider_id, cfg_key).await;
+            if let Some(pt) = crate::providers::resolve_alias(&route.provider_id) {
+                if let Some(m) = crate::providers::manifest::lookup(pt) {
+                    if m.oauth.is_some() {
+                        if let Ok(Some(access)) = self.oauth.access_token(&route.provider_id).await {
+                            access
+                        } else {
+                            // OAuth not set up yet — fall back to the
+                            // raw refresh token (some endpoints accept
+                            // it directly; otherwise the next call
+                            // will surface a 401 and the user knows
+                            // to set the refresh token via the UI).
+                            resolved
+                        }
+                    } else {
+                        resolved
+                    }
+                } else {
+                    resolved
+                }
+            } else {
+                resolved
+            }
         };
         if key.is_empty() {
             return Err(AppError::Internal(format!(

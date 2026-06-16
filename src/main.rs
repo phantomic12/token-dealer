@@ -91,7 +91,7 @@ async fn main() -> anyhow::Result<()> {
     let key_store = KeyStore::new(db.clone(), &master);
     let oauth = token_dealer::oauth::OAuthManager::new(db.clone(), key_store.clone(), http.clone());
     token_dealer::oauth::spawn_refresher(oauth.clone());
-    let pipeline = Pipeline::new(registry, config.clone(), http, db.clone(), health.clone(), key_store.clone());
+    let pipeline = Pipeline::new(registry, config.clone(), http, db.clone(), health.clone(), key_store.clone(), oauth.clone());
     let state = AppState::new(pipeline, config, health, db, metadata, key_store, oauth);
 
     let app = build_router(state);

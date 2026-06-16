@@ -76,6 +76,7 @@ async fn make_state(mock_base: &str) -> AppState {
         db.clone(),
         HealthRegistry::new(),
         key_store.clone(),
+        oauth.clone(),
     );
     let _ = dir;
     let metadata = token_dealer::metadata::MetadataStore::new();
@@ -334,6 +335,7 @@ async fn non_standard_path_provider_routes_correctly() {
         db.clone(),
         HealthRegistry::new(),
         key_store.clone(),
+        oauth.clone(),
     );
     let state = AppState::new(
         pipeline,
@@ -490,6 +492,7 @@ async fn fallback_chain_skips_500_provider_to_next() {
         db.clone(),
         HealthRegistry::new(),
         key_store.clone(),
+        oauth.clone(),
     );
     let state = AppState::new(
         pipeline,
@@ -608,6 +611,7 @@ async fn auth_rejects_request_with_wrong_key() {
         db.clone(),
         HealthRegistry::new(),
         key_store.clone(),
+        oauth.clone(),
     );
     let state = AppState::new(
         pipeline,
@@ -886,6 +890,7 @@ async fn image_endpoint_passes_through_to_provider() {
         db.clone(),
         HealthRegistry::new(),
         key_store.clone(),
+        oauth.clone(),
     );
     let state = AppState::new(
         pipeline,

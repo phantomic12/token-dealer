@@ -145,19 +145,62 @@ impl OAuthManager {
         self.refresh(provider_id).await
     }
 
+    /// Store a refresh token for a provider. The provider's OAuth
+    /// config (token URL + client ID) is auto-detected from the
+    /// manifest for the 3 built-in OAuth providers (github-copilot,
+    /// responses, kiro). For custom providers, call `setup()` with
+    /// an explicit config.
+    pub async fn set_refresh_token(
+        &self,
+        provider_id: &str,
+        token: &str,
+    ) -> anyhow::Result<()> {
+        self.key_store
+            .set(&format!("oauth:{provider_id}"), token)
+            .await?;
+        // Invalidate the in-memory access token so the next call
+        // gets a fresh one.
+        self.cache.write().await.remove(provider_id);
+        Ok(())
+    }
+
     /// Force a refresh.
     pub async fn refresh(&self, provider_id: &str) -> anyhow::Result<Option<String>> {
-        let cfg = self.configs.read().await.get(provider_id).cloned();
-        let cfg = match cfg {
-            Some(c) => c,
-            None => return Ok(None),
-        };
+        // First, try the manifest's OAuth config (most providers).
+        // If absent, fall back to the per-provider oauth_config table
+        // (advanced users who want to override the manifest).
+        let cfg = self
+            .configs
+            .read()
+            .await
+            .get(provider_id)
+            .cloned()
+            .or_else(|| {
+                use crate::providers::manifest;
+                let pt = crate::providers::resolve_alias(provider_id);
+                pt.and_then(|pt| {
+                    manifest::lookup(pt).and_then(|m| {
+                        m.oauth.map(|o| crate::oauth::OAuthConfig {
+                            provider_id: provider_id.to_string(),
+                            token_url: o.token_url.to_string(),
+                            client_id: o.client_id.to_string(),
+                            client_secret: None,
+                            extra: std::collections::HashMap::new(),
+                            refresh_buffer_secs: 300,
+                        })
+                    })
+                })
+            });
         let refresh_token = self
             .key_store
             .get(&format!("oauth:{provider_id}"))
             .await
             .ok()
             .flatten();
+        let cfg = match cfg {
+            Some(c) => c,
+            None => return Ok(None),
+        };
         let refresh_token = match refresh_token {
             Some(t) => t,
             None => return Ok(None),
