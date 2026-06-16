@@ -53,12 +53,41 @@ pub struct DatabaseConfig {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "kebab-case")]
 pub enum ProviderType {
+    // Wire formats with their own adapters
     Anthropic,
-    Openai,
     Google,
+    Kiro,
+    Responses,
     Generic,
+
+    // OpenAI-compatible providers (all use OpenAiAdapter with provider-specific base_url/path)
+    Openai,
+    Openrouter,
+    Tokenrouter,
+    Groq,
+    Deepseek,
+    Fireworks,
+    Mistral,
+    Xai,
+    Qwen,
+    Moonshot,
+    Zai,
+    Xiaomi,
+    Minimax,
+    Byteplus,
+    Nvidia,
+    OpencodeGo,
+    OpencodeZen,
+    Kilo,
+    Commandcode,
+    GithubCopilot,
+    Gitlawb,
+    Ollama,
+    OllamaCloud,
+    LlamaCpp,
+    LmStudio,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -68,9 +97,16 @@ pub struct ProviderConfig {
     pub provider_type: ProviderType,
     #[serde(default)]
     pub key: Option<String>,
-    pub base_url: String,
+    /// Optional. Defaults to the manifest-known base URL for `type`.
+    /// Override here for self-hosted proxies, local-only deployments, or
+    /// staging environments.
+    pub base_url: Option<String>,
     #[serde(default)]
     pub default_model: Option<String>,
+    /// Optional. Default `/v1/chat/completions` for OpenAI-compat. Override
+    /// for providers that use a non-standard path (Kilo `/chat/completions`,
+    /// BytePlus `/v3/chat/completions`, etc.).
+    pub path: Option<String>,
 }
 
 fn default_provider_type() -> ProviderType {

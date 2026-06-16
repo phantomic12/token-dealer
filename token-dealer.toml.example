@@ -1,5 +1,10 @@
 # token-dealer — example config
 # Copy to token-dealer.toml and edit, or mount as TOKEN_DEALER_CONFIG.
+#
+# All 28 provider types manifest supports are pre-defined with sensible
+# base URLs + paths. To enable a provider, uncomment its block and set
+# the API key (or rely on the {PROVIDER}_API_KEY env var). Unconfigured
+# providers are not registered; you only pay for what you wire up.
 
 [server]
 bind = "0.0.0.0:8080"
@@ -8,33 +13,158 @@ log_level = "info"
 [auth]
 enabled = false
 
-# Provider credentials are resolved in this order:
-#   1. ENV var `{PROVIDER_ID}_API_KEY`
-#   2. Env-var interpolation in `key` field
-#   3. Encrypted SQLite store (UI-managed, post-MVP)
-#
-# `key = "raw-string"` works for testing but is discouraged.
-
+# ── Wire formats with their own adapters ─────────────────────────────
 [[providers]]
 id = "anthropic"
 type = "anthropic"
 key = "${ANTHROPIC_API_KEY}"
-base_url = "https://api.anthropic.com"
+# base_url + path filled from manifest defaults; override here for staging.
 
+# [[providers]]
+# id = "google"
+# type = "google"
+# key = "${GEMINI_API_KEY}"
+
+# [[providers]]
+# id = "kiro"
+# type = "kiro"
+# key = "${KIRO_API_KEY}"
+
+# [[providers]]
+# id = "responses"
+# type = "responses"
+# key = "${OPENAI_API_KEY}"
+# Use for o1-pro, codex, deep-research.
+
+# ── OpenAI-compat providers (use OpenAI adapter with provider base URL) ──
 [[providers]]
 id = "openai"
 type = "openai"
 key = "${OPENAI_API_KEY}"
-base_url = "https://api.openai.com"
 
-[[providers]]
-id = "ollama"
-type = "generic"
-key = "ollama"
-base_url = "http://host.docker.internal:11434"
+# [[providers]]
+# id = "openrouter"
+# type = "openrouter"
+# key = "${OPENROUTER_API_KEY}"
 
-# Per-tier routing. `tier/model` syntax in client requests also works
-# and bypasses this entirely (single-model pass-through).
+# [[providers]]
+# id = "tokenrouter"
+# type = "tokenrouter"
+# key = "${TOKENROUTER_API_KEY}"
+
+# [[providers]]
+# id = "groq"
+# type = "groq"
+# key = "${GROQ_API_KEY}"
+
+# [[providers]]
+# id = "deepseek"
+# type = "deepseek"
+# key = "${DEEPSEEK_API_KEY}"
+
+# [[providers]]
+# id = "fireworks"
+# type = "fireworks"
+# key = "${FIREWORKS_API_KEY}"
+
+# [[providers]]
+# id = "mistral"
+# type = "mistral"
+# key = "${MISTRAL_API_KEY}"
+
+# [[providers]]
+# id = "xai"
+# type = "xai"
+# key = "${XAI_API_KEY}"
+
+# [[providers]]
+# id = "qwen"
+# type = "qwen"
+# key = "${DASHSCOPE_API_KEY}"
+
+# [[providers]]
+# id = "moonshot"
+# type = "moonshot"
+# key = "${MOONSHOT_API_KEY}"
+
+# [[providers]]
+# id = "zai"
+# type = "zai"
+# key = "${ZAI_API_KEY}"
+
+# [[providers]]
+# id = "xiaomi"
+# type = "xiaomi"
+# key = "${XIAOMI_API_KEY}"
+
+# [[providers]]
+# id = "minimax"
+# type = "minimax"
+# key = "${MINIMAX_API_KEY}"
+
+# [[providers]]
+# id = "byteplus"
+# type = "byteplus"
+# key = "${BYTEPLUS_API_KEY}"
+
+# [[providers]]
+# id = "nvidia"
+# type = "nvidia"
+# key = "${NVIDIA_API_KEY}"
+
+# [[providers]]
+# id = "opencode-go"
+# type = "opencode-go"
+# key = "${OPENCODE_API_KEY}"
+
+# [[providers]]
+# id = "opencode-zen"
+# type = "opencode-zen"
+# key = "${OPENCODE_ZEN_API_KEY}"
+
+# [[providers]]
+# id = "kilo"
+# type = "kilo"
+# key = "${KILO_API_KEY}"
+
+# [[providers]]
+# id = "commandcode"
+# type = "commandcode"
+# key = "${COMMANDCODE_API_KEY}"
+
+# [[providers]]
+# id = "github-copilot"
+# type = "github-copilot"
+# key = "${GITHUB_COPILOT_TOKEN}"
+
+# [[providers]]
+# id = "gitlawb"
+# type = "gitlawb"
+# key = "${GITLAWB_API_KEY}"
+# Aliases: opengateway, gl
+
+# ── Local-only (no key required, override base_url for non-default port) ──
+# [[providers]]
+# id = "ollama"
+# type = "ollama"
+# # base_url defaults to http://localhost:11434 — override for remote
+# # base_url = "http://gpu-box.lan:11434"
+
+# [[providers]]
+# id = "ollama-cloud"
+# type = "ollama-cloud"
+# key = "${OLLAMA_CLOUD_API_KEY}"
+
+# [[providers]]
+# id = "llamacpp"
+# type = "llamacpp"
+
+# [[providers]]
+# id = "lmstudio"
+# type = "lmstudio"
+
+# ── Per-tier routing. `tier/model` syntax in client requests also works
+#    and bypasses this entirely (single-model pass-through). ────────────
 [tiers.simple]
 primary = "anthropic/claude-haiku-4-5"
 allow_tier_downgrade = false

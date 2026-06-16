@@ -1,12 +1,18 @@
-//! Provider registry. Holds the configured adapters and resolves
+//! Provider registry. Holds configured adapters and resolves
 //! `model_id` lookups. Built once at startup; cheap to clone via Arc.
-
-use std::collections::HashMap;
-use std::sync::Arc;
+//!
+//! `from_configs` is the single place that maps a `ProviderType` to an
+//! adapter. Adding a new provider = one row in `manifest::lookup` +
+//! one match arm here (or none, if it goes through the OpenAI path).
 
 use super::adapter::ProviderAdapter;
+use super::adapters::{
+    AnthropicAdapter, GenericAdapter, GoogleAdapter, KiroAdapter, OpenAiAdapter, ResponsesAdapter,
+};
+use super::manifest;
 use crate::config::types::{ProviderConfig, ProviderType};
-use crate::providers::adapters::{AnthropicAdapter, GenericAdapter, OpenAiAdapter};
+use std::collections::HashMap;
+use std::sync::Arc;
 
 pub struct ProviderRegistry {
     /// provider_id → adapter
@@ -18,35 +24,7 @@ impl ProviderRegistry {
         let mut providers = HashMap::new();
         for cfg in configs {
             let key = resolve_key(&cfg.id, cfg.key.as_deref());
-            let adapter: Arc<dyn ProviderAdapter> = match cfg.provider_type {
-                ProviderType::Anthropic => Arc::new(AnthropicAdapter::new(
-                    &cfg.id,
-                    &cfg.base_url,
-                    cfg.default_model
-                        .clone()
-                        .unwrap_or_else(|| "claude-sonnet-4-5".to_string()),
-                )),
-                ProviderType::Openai => Arc::new(OpenAiAdapter::new(
-                    &cfg.id,
-                    &cfg.base_url,
-                    cfg.default_model
-                        .clone()
-                        .unwrap_or_else(|| "gpt-4o".to_string()),
-                )),
-                ProviderType::Google => Arc::new(OpenAiAdapter::new(
-                    &cfg.id,
-                    &cfg.base_url,
-                    cfg.default_model
-                        .clone()
-                        .unwrap_or_else(|| "gemini-2.0-flash".to_string()),
-                )),
-                ProviderType::Generic => Arc::new(GenericAdapter::new(
-                    &cfg.id,
-                    &cfg.base_url,
-                    cfg.default_model.clone().unwrap_or_else(|| "default".to_string()),
-                )),
-            };
-            // warm key resolution log
+            let adapter: Arc<dyn ProviderAdapter> = build_adapter(cfg)?;
             if key.is_empty() {
                 tracing::warn!(provider = %cfg.id, "no API key configured; requests to this provider will fail");
             } else {
@@ -75,6 +53,49 @@ impl ProviderRegistry {
         }
         Some((p.to_string(), m.to_string()))
     }
+}
+
+fn build_adapter(cfg: &ProviderConfig) -> anyhow::Result<Arc<dyn ProviderAdapter>> {
+    let meta = manifest::lookup(cfg.provider_type);
+    let base_url = cfg
+        .base_url
+        .clone()
+        .or_else(|| meta.map(|m| m.base_url.to_string()))
+        .ok_or_else(|| {
+            anyhow::anyhow!("provider {} has no base_url (use a non-Generic type)", cfg.id)
+        })?;
+    let default_model = cfg
+        .default_model
+        .clone()
+        .or_else(|| meta.map(|m| m.default_model.to_string()))
+        .unwrap_or_else(|| "default".to_string());
+    let path = cfg
+        .path
+        .clone()
+        .or_else(|| meta.map(|m| m.path.to_string()))
+        .unwrap_or_else(|| "/v1/chat/completions".to_string());
+
+    Ok(match cfg.provider_type {
+        ProviderType::Anthropic => Arc::new(AnthropicAdapter::new(
+            &cfg.id,
+            base_url,
+            default_model,
+        )),
+        ProviderType::Google => Arc::new(GoogleAdapter::new(&cfg.id, base_url, default_model)),
+        ProviderType::Kiro => Arc::new(KiroAdapter::new(&cfg.id, base_url, default_model)),
+        ProviderType::Responses => {
+            Arc::new(ResponsesAdapter::new(&cfg.id, base_url, default_model))
+        }
+        ProviderType::Generic => Arc::new(GenericAdapter::new(&cfg.id, base_url, default_model)),
+        // Everything else is OpenAI-compat — use the OpenAI adapter with
+        // the right base_url + path.
+        _ => Arc::new(OpenAiAdapter::with_path(
+            &cfg.id,
+            base_url,
+            path,
+            default_model,
+        )),
+    })
 }
 
 /// Resolves the API key for a provider: env var first, then literal.

@@ -12,6 +12,7 @@ use serde_json::{json, Value};
 pub struct OpenAiAdapter {
     id: String,
     base_url: String,
+    path: String,
     default_model: String,
 }
 
@@ -21,9 +22,19 @@ impl OpenAiAdapter {
         base_url: impl Into<String>,
         default_model: impl Into<String>,
     ) -> Self {
+        Self::with_path(id, base_url, "/v1/chat/completions".to_string(), default_model)
+    }
+
+    pub fn with_path(
+        id: impl Into<String>,
+        base_url: impl Into<String>,
+        path: String,
+        default_model: impl Into<String>,
+    ) -> Self {
         Self {
             id: id.into(),
             base_url: base_url.into(),
+            path,
             default_model: default_model.into(),
         }
     }
@@ -122,7 +133,7 @@ impl ProviderAdapter for OpenAiAdapter {
         client: &'a reqwest::Client,
     ) -> futures::future::BoxFuture<'a, AppResult<CanonicalResponse>> {
         Box::pin(async move {
-            let url = format!("{}/v1/chat/completions", self.base_url);
+            let url = format!("{}{}", self.base_url.trim_end_matches('/'), self.path);
             let (auth_name, auth_val) = self.auth_header(key);
             let mut body = self.build_body(req);
             if let Value::Object(ref mut m) = body {
@@ -159,7 +170,7 @@ impl ProviderAdapter for OpenAiAdapter {
         client: &'a reqwest::Client,
     ) -> futures::future::BoxFuture<'a, AppResult<ProviderStream>> {
         Box::pin(async move {
-            let url = format!("{}/v1/chat/completions", self.base_url);
+            let url = format!("{}{}", self.base_url.trim_end_matches('/'), self.path);
             let (auth_name, auth_val) = self.auth_header(key);
             let mut body = self.build_body(req);
             if let Value::Object(ref mut m) = body {

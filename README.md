@@ -81,6 +81,18 @@ Or use the bundled `docker-compose.yml` (mount the config, set env vars, done).
 
 The `X-Router-Tier` header overrides the tier assignment in all cases.
 
+## Providers
+
+28 provider types, all wired up to manifest-known base URLs + paths. Uncomment the ones you need in `token-dealer.toml`.
+
+| Category | Providers |
+|---|---|
+| **Native adapters** | `anthropic`, `google` (Gemini generateContent), `kiro` (AWS event stream), `responses` (OpenAI /v1/responses for o1-pro/codex) |
+| **OpenAI-compat** | `openai`, `openrouter`, `tokenrouter`, `groq`, `deepseek`, `fireworks`, `mistral`, `xai`, `qwen`, `moonshot`, `zai`, `xiaomi`, `minimax`, `byteplus`, `nvidia`, `opencode-go`, `opencode-zen`, `kilo`, `commandcode`, `github-copilot`, `gitlawb` |
+| **Local-only** | `ollama`, `ollama-cloud`, `llamacpp`, `lmstudio` |
+
+Aliases: `opengateway` → `gitlawb`, `kimi` → `moonshot`, `mimo` → `xiaomi`, `alibaba` → `qwen`, `nim` → `nvidia`, `copilot` → `github-copilot`, `cmd` → `commandcode`, `kilocode` → `kilo`, etc. See `src/providers/manifest.rs::resolve_alias` for the full list.
+
 ## Architecture
 
 ```

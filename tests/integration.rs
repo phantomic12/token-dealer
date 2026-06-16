@@ -26,8 +26,9 @@ async fn make_state(mock_base: &str) -> AppState {
         id: "mock".to_string(),
         provider_type: ProviderType::Openai,
         key: Some("test-key".to_string()),
-        base_url: mock_base.to_string(),
+        base_url: Some(mock_base.to_string()),
         default_model: Some("mock-model".to_string()),
+        path: None,
     });
     cfg.tiers.insert(
         "standard".to_string(),
@@ -207,4 +208,110 @@ async fn list_models_includes_configured_provider() {
         .map(|m| m["id"].as_str().unwrap())
         .collect();
     assert!(ids.contains(&"mock/mock-model"));
+}
+
+#[tokio::test]
+async fn non_standard_path_provider_routes_correctly() {
+    // Kilo uses /chat/completions (no /v1 prefix). Stand up a mock
+    // that listens on that path and confirm the OpenAI adapter
+    // honors the custom path.
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "kilo-x",
+            "object": "chat.completion",
+            "created": 1,
+            "model": "anthropic/claude-sonnet-4-5",
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": "via kilo"},
+                "finish_reason": "stop",
+            }],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut cfg = RouterConfig::default();
+    cfg.providers.push(ProviderConfig {
+        id: "kilo".to_string(),
+        provider_type: ProviderType::Kilo,
+        key: Some("kilo-key".to_string()),
+        base_url: Some(server.uri()),
+        default_model: Some("anthropic/claude-sonnet-4-5".to_string()),
+        path: None, // manifest default: /chat/completions
+    });
+    cfg.tiers.insert(
+        "standard".to_string(),
+        TierConfig {
+            primary: "kilo/anthropic/claude-sonnet-4-5".to_string(),
+            fallbacks: vec![],
+            allow_tier_downgrade: false,
+            downgrade_to: None,
+            min_context_window: None,
+            timeouts: TierTimeoutsSet::default(),
+        },
+    );
+    let tmp = std::env::temp_dir().join(format!("td-kilo-{}.toml", uuid::Uuid::new_v4()));
+    std::fs::write(&tmp, toml::to_string(&cfg).unwrap()).unwrap();
+    let svc = ConfigService::load(&tmp).await.unwrap();
+    let _ = std::fs::remove_file(&tmp);
+    let snapshot = svc.snapshot().await;
+    let registry = Arc::new(ProviderRegistry::from_configs(&snapshot.providers).unwrap());
+    let http = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+    let pipeline = Pipeline::new(registry, svc.clone(), http);
+    let state = AppState::new(pipeline, svc, HealthRegistry::new());
+    let app = build_router(state);
+
+    let req = axum::http::Request::builder()
+        .method("POST")
+        .uri("/v1/chat/completions")
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(
+            json!({
+                "model": "kilo/anthropic/claude-sonnet-4-5",
+                "messages": [{"role": "user", "content": "hi"}]
+            })
+            .to_string(),
+        ))
+        .unwrap();
+
+    let resp = app.oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body_bytes = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
+    let body: Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    assert_eq!(body["choices"][0]["message"]["content"], "via kilo");
+}
+
+#[tokio::test]
+async fn provider_type_resolves_to_manifest_defaults() {
+    // Use TokenRouter (a real public provider) to verify that the
+    // manifest defaults are wired in correctly when the user omits
+    // base_url + path.
+    let meta = token_dealer::providers::manifest_lookup(ProviderType::Tokenrouter)
+        .expect("tokenrouter in manifest");
+    assert_eq!(meta.base_url, "https://api.tokenrouter.com");
+    assert_eq!(meta.path, "/v1/chat/completions");
+
+    // OpenGateway is an alias for Gitlawb.
+    assert_eq!(
+        token_dealer::providers::resolve_alias("opengateway"),
+        Some(ProviderType::Gitlawb)
+    );
+    // kimi / moonshotai are aliases for Moonshot.
+    assert_eq!(
+        token_dealer::providers::resolve_alias("kimi"),
+        Some(ProviderType::Moonshot)
+    );
+    // Kiro has its own provider type.
+    assert_eq!(
+        token_dealer::providers::resolve_alias("kiro"),
+        Some(ProviderType::Kiro)
+    );
 }
