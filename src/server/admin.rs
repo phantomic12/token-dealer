@@ -333,3 +333,152 @@ pub async fn validate_provider_type(Json(body): Json<serde_json::Value>) -> Resp
             .into_response()
     }
 }
+
+/// Test a provider config without persisting it. POST /admin/providers/test
+/// with a JSON body matching ProviderConfig. The server builds a transient
+/// adapter, hits the cheapest possible endpoint (GET /v1/models for
+/// OpenAI-compat, a 1-token POST /v1/messages for Anthropic), and returns
+/// the result as HTML (the wizard UI uses HTMX innerHTML swap).
+pub async fn test_provider(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Json(body): Json<ProviderConfig>,
+) -> Response {
+    use crate::auth::resolve as resolve_key;
+    use crate::config::types::ProviderType;
+    use axum::http::header::HeaderName;
+
+    let is_htmx = headers
+        .get(HeaderName::from_static("hx-request"))
+        .map(|v| v == "true")
+        .unwrap_or(false);
+
+    if body.id.is_empty() {
+        return html_test_result(
+            is_htmx,
+            false,
+            "id required".to_string(),
+        );
+    }
+    if state
+        .config
+        .snapshot()
+        .await
+        .providers
+        .iter()
+        .any(|p| p.id == body.id)
+    {
+        return html_test_result(
+            is_htmx,
+            false,
+            format!("provider id '{}' already exists", body.id),
+        );
+    }
+    let key = resolve_key(&state.key_store, &body.id, body.key.as_deref()).await;
+
+    let adapter_result = state.pipeline.registry.build_transient(&body);
+    let adapter = match adapter_result {
+        Ok(a) => a,
+        Err(e) => return html_test_result(is_htmx, false, e.to_string()),
+    };
+    let base_url = adapter.base_url().trim_end_matches('/').to_string();
+
+    let req_result = match body.provider_type {
+        ProviderType::Anthropic => state
+            .pipeline
+            .http
+            .post(format!("{base_url}/v1/messages"))
+            .header("x-api-key", &key)
+            .header("anthropic-version", "2023-06-01")
+            .header("content-type", "application/json")
+            .json(&json!({
+                "model": adapter.default_model(),
+                "max_tokens": 1,
+                "messages": [{"role": "user", "content": "hi"}]
+            }))
+            .send()
+            .await,
+        ProviderType::Google => state
+            .pipeline
+            .http
+            .get(format!("{base_url}/v1beta/models"))
+            .header("x-goog-api-key", &key)
+            .send()
+            .await,
+        ProviderType::Kiro => state
+            .pipeline
+            .http
+            .get(format!("{base_url}/ping"))
+            .header("authorization", format!("Bearer {key}"))
+            .send()
+            .await,
+        _ => state
+            .pipeline
+            .http
+            .get(format!("{base_url}/v1/models"))
+            .header("authorization", format!("Bearer {key}"))
+            .send()
+            .await,
+    };
+
+    let resp = match req_result {
+        Ok(r) => r,
+        Err(e) => {
+            return html_test_result(
+                is_htmx,
+                false,
+                format!("connection failed: {e}"),
+            );
+        }
+    };
+    let status = resp.status();
+    let body_text = resp.text().await.unwrap_or_default();
+    if status.is_success() {
+        let snippet = body_text.chars().take(120).collect::<String>();
+        let msg = format!(
+            "{} OK ({} bytes): {}",
+            status.as_u16(),
+            body_text.len(),
+            snippet
+        );
+        html_test_result(is_htmx, true, msg)
+    } else {
+        let snippet = body_text.chars().take(200).collect::<String>();
+        let msg = format!(
+            "{} {}: {}",
+            status.as_u16(),
+            status.canonical_reason().unwrap_or(""),
+            snippet
+        );
+        html_test_result(is_htmx, false, msg)
+    }
+}
+
+fn html_test_result(is_htmx: bool, ok: bool, message: String) -> Response {
+    if is_htmx {
+        let class = if ok { "ok" } else { "error" };
+        (
+            StatusCode::OK,
+            axum::response::Html(format!(
+                r##"<div class="test-result {class}">{msg}</div>"##,
+                class = class,
+                msg = html_escape(&message)
+            )),
+        )
+            .into_response()
+    } else if ok {
+        (StatusCode::OK, Json(json!({"status": "ok", "message": message}))).into_response()
+    } else {
+        (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({"status": "error", "message": message})),
+        )
+            .into_response()
+    }
+}
+
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}

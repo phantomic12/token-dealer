@@ -11,6 +11,45 @@ use axum::{
 };
 use std::fmt::Write;
 
+/// Render a ProviderType as its kebab-case string form (e.g.
+/// `ProviderType::GithubCopilot` → `"github-copilot"`). Used by the
+/// UI to match incoming `?type=...` query params against the manifest.
+pub fn provider_type_to_str(pt: &crate::config::types::ProviderType) -> &'static str {
+    use crate::config::types::ProviderType;
+    match pt {
+        ProviderType::Anthropic => "anthropic",
+        ProviderType::Google => "google",
+        ProviderType::Kiro => "kiro",
+        ProviderType::Responses => "responses",
+        ProviderType::Generic => "generic",
+        ProviderType::Openai => "openai",
+        ProviderType::Openrouter => "openrouter",
+        ProviderType::Tokenrouter => "tokenrouter",
+        ProviderType::Groq => "groq",
+        ProviderType::Deepseek => "deepseek",
+        ProviderType::Fireworks => "fireworks",
+        ProviderType::Mistral => "mistral",
+        ProviderType::Xai => "xai",
+        ProviderType::Qwen => "qwen",
+        ProviderType::Moonshot => "moonshot",
+        ProviderType::Zai => "zai",
+        ProviderType::Xiaomi => "xiaomi",
+        ProviderType::Minimax => "minimax",
+        ProviderType::Byteplus => "byteplus",
+        ProviderType::Nvidia => "nvidia",
+        ProviderType::OpencodeGo => "opencode-go",
+        ProviderType::OpencodeZen => "opencode-zen",
+        ProviderType::Kilo => "kilo",
+        ProviderType::Commandcode => "commandcode",
+        ProviderType::GithubCopilot => "github-copilot",
+        ProviderType::Gitlawb => "gitlawb",
+        ProviderType::Ollama => "ollama",
+        ProviderType::OllamaCloud => "ollama-cloud",
+        ProviderType::LlamaCpp => "llamacpp",
+        ProviderType::LmStudio => "lmstudio",
+    }
+}
+
 const CSS: &str = r##"
 :root {
   --bg: #0e1116;
@@ -91,6 +130,33 @@ label { display: block; font-size: 12px; color: var(--text-dim); margin: 12px 0 
 form .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 form .row.three { grid-template-columns: 1fr 1fr 1fr; }
 form .actions { margin-top: 16px; display: flex; gap: 8px; align-items: center; }
+.wizard-steps { display: flex; gap: 6px; margin-bottom: 16px; font-size: 12px;
+  color: var(--text-dim); }
+.wizard-steps .step { padding: 4px 10px; border-radius: 4px;
+  background: var(--bg-elev); }
+.wizard-steps .step.active { background: var(--accent); color: #0d1117;
+  font-weight: 600; }
+.provider-grid { display: grid; grid-template-columns: repeat(4, 1fr);
+  gap: 10px; margin-top: 12px; }
+.provider-card { display: block; padding: 12px; border: 1px solid var(--border);
+  border-radius: 6px; background: var(--bg-elev); text-decoration: none;
+  color: var(--text); cursor: pointer; transition: border-color 0.1s,
+  transform 0.05s; }
+.provider-card:hover { border-color: var(--accent); transform: translateY(-1px); }
+.provider-card.local { border-color: var(--yellow); }
+.provider-card .name { font-weight: 600; font-size: 13px; }
+.provider-card .meta { font-size: 11px; color: var(--text-dim);
+  margin-top: 4px; font-family: var(--mono); }
+.provider-card .badge { margin-top: 6px; }
+.wizard-panel { border: 1px solid var(--border); border-radius: 6px;
+  padding: 20px; background: var(--bg-elev); margin-top: 12px; }
+.wizard-panel h2 { margin-top: 0; }
+.test-result { padding: 10px 14px; border-radius: 5px; margin-top: 12px;
+  font-size: 13px; font-family: var(--mono); }
+.test-result.ok { background: rgba(63, 185, 80, 0.15); color: var(--green);
+  border: 1px solid rgba(63, 185, 80, 0.3); }
+.test-result.error { background: rgba(248, 81, 73, 0.15); color: var(--red);
+  border: 1px solid rgba(248, 81, 73, 0.3); }
 .flash { padding: 10px 14px; border-radius: 5px; margin-bottom: 16px;
   font-size: 13px; }
 .flash.success { background: rgba(63, 185, 80, 0.15); color: var(--green);
@@ -229,77 +295,10 @@ pub async fn providers_page(State(state): State<AppState>) -> Response {
     let body = format!(
         r##"
 <h1>Providers</h1>
-<p class="dim">Adapters wired in to handle <code>provider/model</code> requests. The list and each adapter's defaults come from the manifest table; uncomment the matching block in <code>token-dealer.toml</code> to enable a provider for non-UI use.</p>
+<p class="dim">Adapters wired in to handle <code>provider/model</code> requests. The list and each adapter's defaults come from the manifest table.</p>
 <div class="notice">Changes you make here are live in memory immediately and persisted to <code class="kbd">{path}</code>. Click "Save to disk" in the top right to force a flush.</div>
 
-<h2>Add a provider</h2>
-<form hx-post="/admin/providers" hx-target="#provider-list" hx-swap="outerHTML" hx-on::after-request="this.reset()">
-  <div class="row">
-    <div>
-      <label>ID (used in <code>model</code> field)</label>
-      <input name="id" placeholder="anthropic" required />
-    </div>
-    <div>
-      <label>Type</label>
-      <select name="type" id="provider-type-select" required>
-        <option value="anthropic">anthropic</option>
-        <option value="openai">openai</option>
-        <option value="openrouter">openrouter</option>
-        <option value="tokenrouter">tokenrouter</option>
-        <option value="groq">groq</option>
-        <option value="deepseek">deepseek</option>
-        <option value="fireworks">fireworks</option>
-        <option value="mistral">mistral</option>
-        <option value="xai">xai</option>
-        <option value="qwen">qwen</option>
-        <option value="moonshot">moonshot</option>
-        <option value="zai">zai</option>
-        <option value="xiaomi">xiaomi</option>
-        <option value="minimax">minimax</option>
-        <option value="byteplus">byteplus</option>
-        <option value="nvidia">nvidia</option>
-        <option value="opencode-go">opencode-go</option>
-        <option value="opencode-zen">opencode-zen</option>
-        <option value="kilo">kilo</option>
-        <option value="commandcode">commandcode</option>
-        <option value="github-copilot">github-copilot</option>
-        <option value="gitlawb">gitlawb</option>
-        <option value="google">google</option>
-        <option value="kiro">kiro</option>
-        <option value="responses">responses</option>
-        <option value="ollama">ollama</option>
-        <option value="ollama-cloud">ollama-cloud</option>
-        <option value="llamacpp">llamacpp</option>
-        <option value="lmstudio">lmstudio</option>
-        <option value="generic">generic</option>
-      </select>
-    </div>
-  </div>
-  <div class="row">
-    <div>
-      <label>API key (or <code>${{ENV_VAR}}</code>)</label>
-      <input name="key" placeholder="${{ANTHROPIC_API_KEY}}" />
-    </div>
-    <div>
-      <label>Base URL (optional — defaults from manifest)</label>
-      <input name="base_url" placeholder="https://api.example.com" />
-    </div>
-  </div>
-  <div class="row">
-    <div>
-      <label>Default model (optional)</label>
-      <input name="default_model" placeholder="claude-sonnet-4-5" />
-    </div>
-    <div>
-      <label>Path (optional)</label>
-      <input name="path" placeholder="/v1/chat/completions" />
-    </div>
-  </div>
-  <div class="actions">
-    <button type="submit">Add provider</button>
-    <span class="muted">Manifest defaults fill in base URL + path when left blank.</span>
-  </div>
-</form>
+<a class="wizard-cta" href="/ui/providers/new">+ Add a provider</a>
 
 <h2>Configured providers</h2>
 {list}
@@ -309,6 +308,249 @@ pub async fn providers_page(State(state): State<AppState>) -> Response {
     );
 
     Html(layout("providers", "Providers", &body, None)).into_response()
+}
+
+/// Step 1 of the add-provider wizard: a grid of provider cards.
+/// Clicking a card advances to step 2 with the manifest defaults
+/// pre-filled in the form.
+pub async fn providers_new_step1(State(_state): State<AppState>) -> Response {
+    let body = render_wizard_step1();
+    Html(layout("providers", "Providers", &body, None)).into_response()
+}
+
+/// Step 2 of the wizard: a form pre-filled from the manifest.
+/// The user enters an API key (or env-var reference), then clicks
+/// "Test connection" to verify, then "Save" to persist.
+pub async fn providers_new_step2(
+    State(_state): State<AppState>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let provider_type = params
+        .get("type")
+        .cloned()
+        .unwrap_or_else(|| "openai".to_string());
+    let body = render_wizard_step2(&provider_type);
+    Html(layout("providers", "Providers", &body, None)).into_response()
+}
+
+fn render_wizard_step1() -> String {
+    use crate::providers::manifest;
+    // Friendly display name + tier grouping for the picker. The
+    // order is curated: most common first, then alphabetical.
+    let order: &[(&str, &str)] = &[
+        ("anthropic", "Anthropic (Claude)"),
+        ("openai", "OpenAI"),
+        ("google", "Google (Gemini)"),
+        ("kiro", "Kiro (AWS)"),
+        ("responses", "OpenAI Responses (o3)"),
+        ("generic", "Generic OpenAI-compatible"),
+        ("openrouter", "OpenRouter"),
+        ("tokenrouter", "TokenRouter"),
+        ("groq", "Groq"),
+        ("deepseek", "DeepSeek"),
+        ("fireworks", "Fireworks"),
+        ("mistral", "Mistral"),
+        ("xai", "xAI (Grok)"),
+        ("qwen", "Qwen (Alibaba)"),
+        ("moonshot", "Moonshot (Kimi)"),
+        ("zai", "Z.ai (GLM)"),
+        ("xiaomi", "Xiaomi (MiMo)"),
+        ("minimax", "Minimax"),
+        ("byteplus", "BytePlus"),
+        ("nvidia", "NVIDIA NIM"),
+        ("opencode-go", "OpenCode Go"),
+        ("opencode-zen", "OpenCode Zen"),
+        ("kilo", "Kilo"),
+        ("commandcode", "CommandCode"),
+        ("github-copilot", "GitHub Copilot"),
+        ("gitlawb", "Gitlawb"),
+        ("ollama", "Ollama (local)"),
+        ("ollama-cloud", "Ollama Cloud"),
+        ("llamacpp", "llama.cpp (local)"),
+        ("lmstudio", "LM Studio (local)"),
+    ];
+
+    let mut cards = String::new();
+    for (type_str, display) in order {
+        let target = type_str.to_string();
+        let info = crate::providers::manifest::ALL_TYPES
+            .iter()
+            .find(|pt| provider_type_to_str(pt) == target.as_str())
+            .and_then(|pt| manifest::lookup(*pt));
+        let (badge, badge_class, meta) = match info {
+            Some(m) => {
+                let badge = if m.local_only { "local" } else { "cloud" };
+                let class = if m.local_only { "local" } else { "healthy" };
+                let needs_key = m.requires_key;
+                let meta = if needs_key {
+                    format!("requires API key · {}", m.base_url)
+                } else {
+                    format!("no key · {}", m.base_url)
+                };
+                (badge.to_string(), class.to_string(), meta)
+            }
+            None => (
+                "?".to_string(),
+                "healthy".to_string(),
+                "no manifest".to_string(),
+            ),
+        };
+        let _ = write!(
+            cards,
+            r##"<a class="provider-card {cls}" href="/ui/providers/new/config?type={t}" hx-get="/ui/providers/new/config?type={t}" hx-target="#wizard" hx-swap="outerHTML" hx-push-url="true">
+              <div class="name">{display}</div>
+              <div class="meta">{meta}</div>
+              <span class="badge {cls}">{badge}</span>
+            </a>"##,
+            cls = badge_class,
+            t = type_str,
+            display = display,
+            meta = meta,
+            badge = badge,
+        );
+    }
+
+    format!(
+        r##"
+<h1>Add a provider</h1>
+<div class="wizard-steps">
+  <span class="step active">1. Pick provider</span>
+  <span class="step">2. Configure</span>
+  <span class="step">3. Test + save</span>
+</div>
+<p class="dim">Click a provider to continue. Defaults are filled in from the manifest table — you usually only need to add the API key.</p>
+
+<div id="wizard">
+  <div class="provider-grid">{cards}</div>
+</div>
+
+<p style="margin-top: 24px;"><a href="/ui/providers">Cancel</a></p>
+"##
+    )
+}
+
+fn render_wizard_step2(provider_type: &str) -> String {
+    use crate::config::types::ProviderType;
+    use crate::providers::manifest;
+
+    let pt = crate::providers::manifest::ALL_TYPES
+        .iter()
+        .find(|p| provider_type_to_str(p) == provider_type)
+        .copied()
+        .unwrap_or(ProviderType::Generic);
+    let info = manifest::lookup(pt);
+    let (default_url, default_model, default_path, requires_key, local_only) = match info {
+        Some(m) => (
+            m.base_url.to_string(),
+            m.default_model.to_string(),
+            m.path.to_string(),
+            m.requires_key,
+            m.local_only,
+        ),
+        None => (
+            "https://api.example.com".to_string(),
+            "default".to_string(),
+            "/v1/chat/completions".to_string(),
+            true,
+            false,
+        ),
+    };
+
+    let id_suggestion = if provider_type == "generic" {
+        "my-proxy".to_string()
+    } else {
+        provider_type.to_string()
+    };
+
+    let key_label = if local_only {
+        "Key (any value, e.g. &quot;ollama&quot; — not validated)"
+    } else if requires_key {
+        "API key (or <code>$&#123;ENV_VAR&#125;</code> reference)"
+    } else {
+        "API key (optional)"
+    };
+
+    let display_name = match provider_type {
+        "anthropic" => "Anthropic (Claude)",
+        "openai" => "OpenAI",
+        "google" => "Google (Gemini)",
+        "kiro" => "Kiro (AWS)",
+        "responses" => "OpenAI Responses (o3)",
+        "generic" => "Generic OpenAI-compatible",
+        t => t,
+    };
+
+    format!(
+        r##"
+<h1>Add a provider</h1>
+<div class="wizard-steps">
+  <span class="step"><a href="/ui/providers/new" style="color:inherit;text-decoration:none;">1. Pick provider</a></span>
+  <span class="step active">2. Configure</span>
+  <span class="step">3. Test + save</span>
+</div>
+
+<div id="wizard" class="wizard-panel">
+  <h2>{display_name} <span class="badge {local_badge}">{local_label}</span></h2>
+  <p class="dim">Defaults are pre-filled. Override base URL or path for self-hosted proxies / staging. The test call will hit <code>{default_path}</code> with the configured key.</p>
+
+  <form id="provider-form"
+        hx-post="/admin/providers"
+        hx-target="#wizard"
+        hx-swap="outerHTML"
+        hx-on::after-request="document.getElementById('wizard').innerHTML = '<div class=&quot;flash success&quot;>Provider saved. Reloading…</div>'; setTimeout(() => location.reload(), 600)">
+    <input type="hidden" name="type" value="{pt_as_str}" />
+    <div class="row three">
+      <div>
+        <label>ID (used in <code>model</code> field)</label>
+        <input name="id" value="{id_suggestion}" required />
+      </div>
+      <div>
+        <label>{key_label}</label>
+        <input name="key" placeholder="${{ANTHROPIC_API_KEY}}" autofocus />
+      </div>
+      <div>
+        <label>Default model</label>
+        <input name="default_model" value="{default_model}" />
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <label>Base URL (optional — defaults from manifest)</label>
+        <input name="base_url" value="{default_url}" />
+      </div>
+      <div>
+        <label>Path (optional)</label>
+        <input name="path" value="{default_path}" />
+      </div>
+    </div>
+
+    <div id="test-result"></div>
+
+    <div class="actions">
+      <button type="button" class="secondary"
+              hx-post="/admin/providers/test"
+              hx-include="#provider-form"
+              hx-target="#test-result"
+              hx-swap="innerHTML">
+        Test connection
+      </button>
+      <button type="submit">Save provider</button>
+      <span class="muted">Test runs against the upstream with the key above. No save until you click Save.</span>
+    </div>
+  </form>
+</div>
+
+<p style="margin-top: 16px;"><a href="/ui/providers/new">← back to provider picker</a></p>
+"##,
+        display_name = display_name,
+        local_badge = if local_only { "local" } else { "healthy" },
+        local_label = if local_only { "local" } else { "cloud" },
+        default_path = default_path,
+        pt_as_str = provider_type_to_str(&pt),
+        id_suggestion = id_suggestion,
+        default_model = default_model,
+        default_url = default_url,
+    )
 }
 
 pub async fn providers_partial(State(state): State<AppState>) -> Response {

@@ -22,6 +22,41 @@ pub struct ManifestProvider {
     pub local_only: bool,
 }
 
+/// All known provider types. Used by the wizard UI to render the
+/// picker grid.
+pub const ALL_TYPES: &[ProviderType] = &[
+    ProviderType::Anthropic,
+    ProviderType::Google,
+    ProviderType::Kiro,
+    ProviderType::Responses,
+    ProviderType::Generic,
+    ProviderType::Openai,
+    ProviderType::Openrouter,
+    ProviderType::Tokenrouter,
+    ProviderType::Groq,
+    ProviderType::Deepseek,
+    ProviderType::Fireworks,
+    ProviderType::Mistral,
+    ProviderType::Xai,
+    ProviderType::Qwen,
+    ProviderType::Moonshot,
+    ProviderType::Zai,
+    ProviderType::Xiaomi,
+    ProviderType::Minimax,
+    ProviderType::Byteplus,
+    ProviderType::Nvidia,
+    ProviderType::OpencodeGo,
+    ProviderType::OpencodeZen,
+    ProviderType::Kilo,
+    ProviderType::Commandcode,
+    ProviderType::GithubCopilot,
+    ProviderType::Gitlawb,
+    ProviderType::Ollama,
+    ProviderType::OllamaCloud,
+    ProviderType::LlamaCpp,
+    ProviderType::LmStudio,
+];
+
 pub fn lookup(pt: ProviderType) -> Option<ManifestProvider> {
     Some(match pt {
         // Wire formats

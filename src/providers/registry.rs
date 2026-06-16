@@ -57,6 +57,15 @@ impl ProviderRegistry {
             .collect()
     }
 
+    /// Build an adapter from a config without registering it. Used by
+    /// the test endpoint to validate a config before persisting.
+    pub fn build_transient(
+        &self,
+        cfg: &crate::config::types::ProviderConfig,
+    ) -> anyhow::Result<Arc<dyn ProviderAdapter>> {
+        build_adapter(cfg)
+    }
+
     /// Live add. Used by the admin UI and POST /admin/providers.
     pub async fn add(&self, cfg: &ProviderConfig) -> anyhow::Result<()> {
         let adapter = build_adapter(cfg)?;
