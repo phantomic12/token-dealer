@@ -6,6 +6,7 @@ pub mod cost;
 pub mod db;
 pub mod error;
 pub mod log;
+pub mod metadata;
 pub mod providers;
 pub mod proxy;
 pub mod routing;
@@ -21,6 +22,7 @@ pub struct AppState {
     pub config: config::ConfigService,
     pub health: providers::HealthRegistry,
     pub db: db::Db,
+    pub metadata: metadata::MetadataStore,
 }
 
 impl AppState {
@@ -29,12 +31,14 @@ impl AppState {
         config: config::ConfigService,
         health: providers::HealthRegistry,
         db: db::Db,
+        metadata: metadata::MetadataStore,
     ) -> Self {
         Self {
             pipeline: Arc::new(pipeline),
             config,
             health,
             db,
+            metadata,
         }
     }
 }

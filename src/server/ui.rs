@@ -136,6 +136,7 @@ fn layout(active: &str, title: &str, body: &str, flash: Option<&str>) -> String 
     {nav_dashboard}
     {nav_providers}
     {nav_tiers}
+    {nav_rules}
     {nav_logs}
   </nav>
   <div class="actions">
@@ -154,6 +155,7 @@ fn layout(active: &str, title: &str, body: &str, flash: Option<&str>) -> String 
         nav_providers = nav("/ui/providers", "Providers", "providers"),
         nav_tiers = nav("/ui/tiers", "Tiers", "tiers"),
         nav_logs = nav("/ui/logs", "Logs", "logs"),
+        nav_rules = nav("/ui/rules", "Rules", "rules"),
         flash_html = flash_html,
         body = body,
     )
@@ -411,6 +413,113 @@ pub async fn tiers_page(State(state): State<AppState>) -> Response {
     );
 
     Html(layout("tiers", "Tiers", &body, None)).into_response()
+}
+
+pub async fn rules_page(State(state): State<AppState>) -> Response {
+    let snap = state.config.snapshot().await;
+    let body = format!(
+        r##"
+<h1>Rules</h1>
+<p class="dim">Detection rules. Evaluated in order; the first match (or the highest tier floor) wins. Useful for forcing specific request shapes to specific tiers.</p>
+<div class="notice">Changes persist to <code class="kbd">{path}</code> immediately.</div>
+
+<h2>Add a rule</h2>
+<form hx-post="/admin/rules" hx-target="#rule-list" hx-swap="outerHTML" hx-on::after-request="this.reset()">
+  <div class="row three">
+    <div>
+      <label>has_tools = true/false (optional)</label>
+      <select name="has_tools">
+        <option value="">(any)</option>
+        <option value="true">true</option>
+        <option value="false">false</option>
+      </select>
+    </div>
+    <div>
+      <label>input_tokens &gt; N (optional)</label>
+      <input name="input_tokens_gt" type="number" placeholder="50000" />
+    </div>
+    <div>
+      <label>force tier</label>
+      <select name="tier">
+        <option value="simple">simple</option>
+        <option value="standard" selected>standard</option>
+        <option value="complex">complex</option>
+        <option value="reasoning">reasoning</option>
+        <option value="high_context">high_context</option>
+        <option value="multimodal">multimodal</option>
+      </select>
+    </div>
+  </div>
+  <div class="row">
+    <div>
+      <label>prompt contains (comma-separated keywords, optional)</label>
+      <input name="prompt_contains" placeholder="reason step by step, formally prove" />
+    </div>
+  </div>
+  <div class="actions">
+    <button type="submit">Add rule</button>
+    <span class="muted">Multiple conditions are AND-ed together. Empty conditions match everything.</span>
+  </div>
+</form>
+
+<h2>Configured rules</h2>
+{list}
+"##,
+        path = state.config.path().display(),
+        list = render_rules_list(&snap.detection.rules),
+    );
+
+    Html(layout("rules", "Rules", &body, None)).into_response()
+}
+
+fn render_rules_list(
+    rules: &[crate::config::types::DetectionRule],
+) -> String {
+    if rules.is_empty() {
+        return r#"<div class="center-empty" id="rule-list">No rules. Add one above.</div>"#.to_string();
+    }
+    let mut rows = String::new();
+    for (i, r) in rules.iter().enumerate() {
+        let cond = render_condition(&r.condition);
+        let _ = write!(
+            rows,
+            r##"<tr id="rule-{i}">
+              <td><code>{i}</code></td>
+              <td><code>{cond}</code></td>
+              <td><span class="badge healthy">{tier}</span></td>
+              <td><form hx-post="/admin/rules/{i}" hx-target="#rule-list" hx-swap="outerHTML" hx-confirm="Delete rule {i}?" class="inline"><button class="danger" type="submit">Delete</button></form></td>
+            </tr>"##,
+            i = i,
+            cond = html_escape(&cond),
+            tier = html_escape(&r.tier),
+        );
+    }
+    format!(
+        r##"<table id="rule-list">
+  <thead><tr><th>#</th><th>Condition</th><th>Tier</th><th></th></tr></thead>
+  <tbody>{rows}</tbody>
+</table>"##
+    )
+}
+
+fn render_condition(cond: &crate::config::types::DetectionCondition) -> String {
+    let mut parts = Vec::new();
+    if let Some(t) = cond.has_tools {
+        parts.push(format!("has_tools = {t}"));
+    }
+    if let Some(n) = cond.input_tokens_gt {
+        parts.push(format!("input_tokens > {n}"));
+    }
+    if let Some(kws) = &cond.prompt_contains {
+        if !kws.is_empty() {
+            parts.push(format!("prompt_contains: {}", kws.join(", ")));
+        }
+    }
+    if parts.is_empty() {
+        "(always)".to_string()
+    } else {
+        parts.join(" AND ")
+    }
 }
 
 pub async fn logs_page(State(state): State<AppState>) -> Response {

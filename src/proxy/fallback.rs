@@ -12,6 +12,7 @@
 //! yet on the first attempt), but mid-stream fallbacks are not.
 
 use super::super::error::AppError;
+use super::super::providers::health::HealthRegistry;
 use super::super::providers::ProviderAdapter;
 use super::super::schema::canonical::{CanonicalRequest, CanonicalResponse};
 use std::sync::Arc;
@@ -132,13 +133,23 @@ pub struct ProviderHandle {
     pub key: String,
 }
 
-/// Execute a routing plan against a resolver. The resolver returns a
-/// `ProviderHandle` (adapter + key) for a given provider id. If the
-/// resolver returns `None` we skip the attempt. The HTTP client is
-/// shared by reference — the adapter uses its own internally.
+/// What the executor needs to track per-provider health (the
+/// circuit breaker). The caller owns the registry; the executor
+/// reads availability and records success/failure.
+pub struct HealthHook {
+    pub registry: HealthRegistry,
+    pub failure_threshold: u32,
+    pub cooldown_secs: u64,
+}
+
+/// Execute a routing plan against a resolver + health hook. The
+/// resolver returns a `ProviderHandle` (adapter + key) for a given
+/// provider id. The health hook short-circuits providers in cooldown
+/// and records outcomes so the next call can probe.
 pub async fn execute<F, Fut>(
     plan: RoutingPlan,
     resolve: F,
+    health: &HealthHook,
 ) -> Result<ExecutionResult, AppError>
 where
     F: Fn(&str) -> Fut,
@@ -160,6 +171,21 @@ where
                 "request budget exhausted after {}ms",
                 started.elapsed().as_millis()
             )));
+        }
+
+        // Circuit breaker: skip if this provider is in cooldown.
+        if !health.registry.is_available(&provider_id).await {
+            attempts.push(AttemptRecord {
+                provider: provider_id.clone(),
+                model: model_id.clone(),
+                outcome: AttemptOutcome::Skip {
+                    reason: "in cooldown",
+                },
+                latency_ms: 0,
+            });
+            providers_tried.push(provider_id);
+            fallback_count += 1;
+            continue;
         }
 
         let Some(handle) = resolve(&provider_id).await else {
@@ -192,6 +218,25 @@ where
             Ok(_) => AttemptOutcome::Success,
             Err(e) => classify(e),
         };
+
+        // Record outcome on health
+        if outcome.is_retry() || matches!(outcome, AttemptOutcome::Success) {
+            // success; reset failure count
+            health
+                .registry
+                .record_success(&handle.provider_id)
+                .await;
+        } else {
+            health
+                .registry
+                .record_failure(
+                    &handle.provider_id,
+                    health.failure_threshold,
+                    health.cooldown_secs,
+                )
+                .await;
+        }
+
         attempts.push(AttemptRecord {
             provider: handle.provider_id.clone(),
             model: handle.model_id.clone(),
@@ -228,6 +273,21 @@ where
                 Ok(_) => AttemptOutcome::Success,
                 Err(e) => classify(e),
             };
+            if retry_outcome.is_retry() || matches!(retry_outcome, AttemptOutcome::Success) {
+                health
+                    .registry
+                    .record_success(&handle.provider_id)
+                    .await;
+            } else {
+                health
+                    .registry
+                    .record_failure(
+                        &handle.provider_id,
+                        health.failure_threshold,
+                        health.cooldown_secs,
+                    )
+                    .await;
+            }
             attempts.push(AttemptRecord {
                 provider: handle.provider_id.clone(),
                 model: handle.model_id.clone(),

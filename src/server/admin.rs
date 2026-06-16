@@ -15,7 +15,7 @@ use axum::{
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::config::types::{ProviderConfig, ProviderType, TierConfig};
+use crate::config::types::{DetectionCondition, DetectionRule, ProviderConfig, ProviderType, TierConfig};
 
 pub async fn add_provider(
     State(state): State<AppState>,
@@ -146,6 +146,80 @@ pub async fn save_config(State(state): State<AppState>) -> Response {
     let snapshot = state.config.snapshot().await;
     match state.config.save_to_disk(&snapshot).await {
         Ok(_) => (StatusCode::OK, Json(json!({"status": "saved"}))).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("save failed: {e}")})),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct AddRuleRequest {
+    /// Optional index — when present, replaces the rule at that index
+    /// instead of appending.
+    pub index: Option<usize>,
+    pub has_tools: Option<bool>,
+    pub input_tokens_gt: Option<u32>,
+    pub prompt_contains: Option<Vec<String>>,
+    pub tier: String,
+}
+
+pub async fn add_rule(
+    State(state): State<AppState>,
+    Json(body): Json<AddRuleRequest>,
+) -> Response {
+    if crate::schema::canonical::Tier::parse(&body.tier).is_none() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": format!("unknown tier: {}", body.tier)})),
+        )
+            .into_response();
+    }
+    let rule = DetectionRule {
+        condition: DetectionCondition {
+            has_tools: body.has_tools,
+            input_tokens_gt: body.input_tokens_gt,
+            prompt_contains: body.prompt_contains,
+        },
+        tier: body.tier,
+    };
+    let idx = body.index;
+    let result = state
+        .config
+        .update_with(|cfg| match idx {
+            Some(i) if i < cfg.detection.rules.len() => {
+                cfg.detection.rules[i] = rule;
+            }
+            _ => {
+                cfg.detection.rules.push(rule);
+            }
+        })
+        .await;
+    match result {
+        Ok(_) => (StatusCode::OK, Json(json!({"status": "ok"}))).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("save failed: {e}")})),
+        )
+            .into_response(),
+    }
+}
+
+pub async fn delete_rule(
+    State(state): State<AppState>,
+    axum::extract::Path(index): axum::extract::Path<usize>,
+) -> Response {
+    let result = state
+        .config
+        .update_with(|cfg| {
+            if index < cfg.detection.rules.len() {
+                cfg.detection.rules.remove(index);
+            }
+        })
+        .await;
+    match result {
+        Ok(_) => (StatusCode::OK, Json(json!({"status": "deleted", "index": index}))).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"error": format!("save failed: {e}")})),

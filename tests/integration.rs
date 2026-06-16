@@ -16,6 +16,7 @@ use token_dealer::{
     AppState,
 };
 use tower::ServiceExt;
+use uuid::Uuid;
 use wiremock::{
     matchers::{header, method, path},
     Mock, MockServer, ResponseTemplate,
@@ -59,13 +60,36 @@ async fn make_state(mock_base: &str) -> AppState {
         .build()
         .unwrap();
     let db = Db::open(&snapshot.database).unwrap();
-    let pipeline = Pipeline::new(registry, svc.clone(), http, db.clone());
+    let pipeline = Pipeline::new(registry, svc.clone(), http, db.clone(), HealthRegistry::new());
     let _ = dir;
-    AppState::new(pipeline, svc, HealthRegistry::new(), db)
+    let metadata = token_dealer::metadata::MetadataStore::new();
+    AppState::new(pipeline, svc, HealthRegistry::new(), db, metadata)
 }
 
 fn tempfile_or_stdout() -> () {
     // placeholder so we can return () in async fn
+}
+
+/// Build a minimal CanonicalRequest for tests that need one but
+/// don't care about its contents (e.g. fallback unit tests).
+fn build_test_canonical_request() -> token_dealer::schema::canonical::CanonicalRequest {
+    use token_dealer::schema::canonical::{CanonicalRequest, Tier};
+    CanonicalRequest {
+        messages: vec![],
+        system: None,
+        max_tokens: None,
+        temperature: None,
+        top_p: None,
+        stop: None,
+        stream: false,
+        tools: None,
+        tool_choice: None,
+        tier: Tier::Standard,
+        selected_model: "x".to_string(),
+        selected_provider: "x".to_string(),
+        request_id: Uuid::new_v4(),
+        extensions: Default::default(),
+    }
 }
 
 #[tokio::test]
@@ -266,8 +290,8 @@ async fn non_standard_path_provider_routes_correctly() {
         .build()
         .unwrap();
     let db = Db::open(&snapshot.database).unwrap();
-    let pipeline = Pipeline::new(registry, svc.clone(), http, db.clone());
-    let state = AppState::new(pipeline, svc, HealthRegistry::new(), db);
+    let pipeline = Pipeline::new(registry, svc.clone(), http, db.clone(), HealthRegistry::new());
+    let state = AppState::new(pipeline, svc, HealthRegistry::new(), db, token_dealer::metadata::MetadataStore::new());
     let app = build_router(state);
 
     let req = axum::http::Request::builder()
@@ -389,8 +413,8 @@ async fn fallback_chain_skips_500_provider_to_next() {
         .build()
         .unwrap();
     let db = Db::open(&snap.database).unwrap();
-    let pipeline = Pipeline::new(registry, svc.clone(), http, db.clone());
-    let state = AppState::new(pipeline, svc, HealthRegistry::new(), db);
+    let pipeline = Pipeline::new(registry, svc.clone(), http, db.clone(), HealthRegistry::new());
+    let state = AppState::new(pipeline, svc, HealthRegistry::new(), db, token_dealer::metadata::MetadataStore::new());
     let app = build_router(state);
 
     let req = axum::http::Request::builder()
@@ -483,8 +507,14 @@ async fn auth_rejects_request_with_wrong_key() {
         .build()
         .unwrap();
     let db = Db::open(&snap.database).unwrap();
-    let pipeline = Pipeline::new(registry, svc.clone(), http, db.clone());
-    let state = AppState::new(pipeline, svc, HealthRegistry::new(), db);
+    let pipeline = Pipeline::new(registry, svc.clone(), http, db.clone(), HealthRegistry::new());
+    let state = AppState::new(
+        pipeline,
+        svc,
+        HealthRegistry::new(),
+        db,
+        token_dealer::metadata::MetadataStore::new(),
+    );
 
     // No auth header
     let req = axum::http::Request::builder()
@@ -523,4 +553,164 @@ async fn auth_rejects_request_with_wrong_key() {
         .unwrap();
     let resp = build_router(state).oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn circuit_breaker_skips_provider_in_cooldown() {
+    use token_dealer::providers::HealthRegistry;
+    use token_dealer::proxy::fallback::{self, HealthHook, ProviderHandle, RoutingPlan};
+    use token_dealer::schema::canonical::{CanonicalRequest, Tier};
+    use uuid::Uuid;
+
+    let registry = HealthRegistry::new();
+    // Mark "down" as down with an active cooldown
+    registry
+        .record_failure("down-provider", 1, 60)
+        .await;
+
+    let hook = HealthHook {
+        registry: registry.clone(),
+        failure_threshold: 1,
+        cooldown_secs: 60,
+    };
+
+    let plan = RoutingPlan {
+        request: build_test_canonical_request(),
+        primary: "down-provider/x".to_string(),
+        fallbacks: vec!["ok-provider/y".to_string()],
+        downgrade_to: None,
+        request_budget: Duration::from_secs(2),
+        max_retries_per_provider: 1,
+        max_retry_after_ms: 0,
+        fixed_retry_wait_ms: 0,
+    };
+
+    // The plan will try the down provider first, which is in cooldown
+    // so it gets skipped (no record_success / record_failure), then
+    // moves to the fallback. Since the fallback provider has no
+    // adapter registered, the result is "all fallbacks exhausted".
+    let result = fallback::execute(
+        plan,
+        |_pid| async move { None::<ProviderHandle> },
+        &hook,
+    )
+    .await;
+
+    // We expect an error because no providers returned an adapter
+    let err = result.unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("all fallbacks exhausted"),
+        "got: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn rules_add_and_delete_persist() {
+    let server = MockServer::start().await;
+    let state = make_state(&server.uri()).await;
+    let app = build_router(state.clone());
+
+    // Add a rule
+    let req = axum::http::Request::builder()
+        .method("POST")
+        .uri("/admin/rules")
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(
+            json!({
+                "has_tools": true,
+                "input_tokens_gt": 1000,
+                "tier": "complex"
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Verify it landed in the snapshot
+    let snap = state.config.snapshot().await;
+    assert_eq!(snap.detection.rules.len(), 1);
+    assert_eq!(snap.detection.rules[0].tier, "complex");
+    assert_eq!(snap.detection.rules[0].condition.has_tools, Some(true));
+
+    // Delete it
+    let req = axum::http::Request::builder()
+        .method("POST")
+        .uri("/admin/rules/0")
+        .header("content-type", "application/json")
+        .body(axum::body::Body::empty())
+        .unwrap();
+    let resp = build_router(state.clone()).oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let snap = state.config.snapshot().await;
+    assert_eq!(snap.detection.rules.len(), 0);
+}
+
+#[tokio::test]
+async fn image_endpoint_passes_through_to_provider() {
+    let image_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/images/generations"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "created": 1,
+            "data": [{"url": "https://example.com/img.png"}]
+        })))
+        .expect(1)
+        .mount(&image_server)
+        .await;
+
+    let mut cfg = RouterConfig::default();
+    cfg.database = DatabaseConfig { path: ":memory:".to_string() };
+    cfg.providers.push(ProviderConfig {
+        id: "openai".to_string(),
+        provider_type: ProviderType::Openai,
+        key: Some("img-test-key".to_string()),
+        base_url: Some(image_server.uri()),
+        default_model: Some("dall-e-3".to_string()),
+        path: None,
+    });
+    let tmp = std::env::temp_dir().join(format!("td-img-{}.toml", uuid::Uuid::new_v4()));
+    std::fs::write(&tmp, toml::to_string(&cfg).unwrap()).unwrap();
+    let svc = ConfigService::load(&tmp).await.unwrap();
+    let _ = std::fs::remove_file(&tmp);
+    let snap = svc.snapshot().await;
+    let registry = Arc::new(ProviderRegistry::from_configs(&snap.providers).unwrap());
+    let http = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+    let db = Db::open(&snap.database).unwrap();
+    let pipeline = Pipeline::new(registry, svc.clone(), http, db.clone(), HealthRegistry::new());
+    let state = AppState::new(
+        pipeline,
+        svc,
+        HealthRegistry::new(),
+        db,
+        token_dealer::metadata::MetadataStore::new(),
+    );
+    let app = build_router(state);
+
+    let req = axum::http::Request::builder()
+        .method("POST")
+        .uri("/v1/images/generations")
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(
+            json!({
+                "model": "openai/dall-e-3",
+                "prompt": "a cat in a hat",
+                "n": 1,
+                "size": "1024x1024"
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let h = resp.headers().clone();
+    assert_eq!(h.get("x-router-provider").unwrap(), "openai");
+    let body_bytes = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
+    let body: Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert_eq!(body["data"][0]["url"], "https://example.com/img.png");
 }

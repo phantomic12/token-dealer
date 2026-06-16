@@ -3,14 +3,15 @@
 use super::auth;
 use super::handlers::{chat_completions, health, list_models, reload_config};
 use super::middleware::request_id_layer;
+use super::multimodal::{audio_speech, image_generations, video_generations};
 use super::ui::{
-    dashboard, index, logs_page, providers_page, providers_partial, tiers_page,
+    dashboard, index, logs_page, providers_page, providers_partial, rules_page, tiers_page,
     ui_remove_provider, ui_style,
 };
 use super::AppState;
 use super::admin::{
-    add_provider, list_provider_types, remove_provider, save_config, update_tier,
-    validate_provider_type,
+    add_provider, add_rule, delete_rule, list_provider_types, remove_provider, save_config,
+    update_tier, validate_provider_type,
 };
 use axum::{
     middleware::from_fn_with_state,
@@ -24,6 +25,9 @@ pub fn build_router(state: AppState) -> Router {
         // Public API
         .route("/v1/chat/completions", post(chat_completions))
         .route("/v1/models", get(list_models))
+        .route("/v1/images/generations", post(image_generations))
+        .route("/v1/audio/speech", post(audio_speech))
+        .route("/v1/videos/generations", post(video_generations))
         .route("/v1/health", get(health))
         .route("/health", get(health))
         // Admin API (JSON)
@@ -44,6 +48,8 @@ pub fn build_router(state: AppState) -> Router {
             "/admin/provider-types/validate",
             post(validate_provider_type),
         )
+        .route("/admin/rules", post(add_rule))
+        .route("/admin/rules/:index", post(delete_rule).delete(delete_rule))
         // WebUI
         .route("/", get(index))
         .route("/ui", get(index))
@@ -52,6 +58,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/ui/partials/providers", get(providers_partial))
         .route("/ui/tiers", get(tiers_page))
         .route("/ui/logs", get(logs_page))
+        .route("/ui/rules", get(rules_page))
         .route("/ui/style.css", get(ui_style))
         .route("/admin/ui/remove/:id", post(ui_remove_provider))
         .with_state(state.clone())

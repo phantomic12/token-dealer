@@ -2,6 +2,7 @@ pub mod admin;
 pub mod auth;
 pub mod handlers;
 pub mod middleware;
+pub mod multimodal;
 pub mod router;
 pub mod ui;
 

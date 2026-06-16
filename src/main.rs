@@ -5,6 +5,7 @@ use std::sync::Arc;
 use token_dealer::{
     config::ConfigService,
     db::Db,
+    metadata::MetadataStore,
     providers::{HealthRegistry, ProviderRegistry},
     proxy::pipeline::Pipeline,
     server::build_router,
@@ -40,21 +41,22 @@ async fn main() -> anyhow::Result<()> {
         "token-dealer starting"
     );
 
-    let registry = Arc::new(
-        ProviderRegistry::from_configs(&snapshot.providers)
-            .context("building provider registry")?,
-    );
-
+    let registry = Arc::new(ProviderRegistry::from_configs(&snapshot.providers).unwrap_or_else(|e| {
+        tracing::error!("provider registry build failed: {e}; starting empty");
+        ProviderRegistry::from_configs(&[]).unwrap()
+    }));
     let http = reqwest::Client::builder()
         .user_agent(concat!("token-dealer/", env!("CARGO_PKG_VERSION")))
         .build()
         .context("building reqwest client")?;
 
     let db = Db::open(&snapshot.database).context("opening request log db")?;
+    let metadata = MetadataStore::new();
+    token_dealer::metadata::spawn_refresher(metadata.clone());
 
-    let pipeline = Pipeline::new(registry, config.clone(), http, db.clone());
     let health = HealthRegistry::new();
-    let state = AppState::new(pipeline, config, health, db);
+    let pipeline = Pipeline::new(registry, config.clone(), http, db.clone(), health.clone());
+    let state = AppState::new(pipeline, config, health, db, metadata);
 
     let app = build_router(state);
     let listener = tokio::net::TcpListener::bind(&bind)

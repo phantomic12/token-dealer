@@ -24,6 +24,7 @@ pub struct Pipeline {
     pub selector: Selector,
     pub http: reqwest::Client,
     pub db: crate::db::Db,
+    pub health: crate::providers::HealthRegistry,
 }
 
 pub struct RoutingOutput {
@@ -39,6 +40,7 @@ impl Pipeline {
         config: ConfigService,
         http: reqwest::Client,
         db: crate::db::Db,
+        health: crate::providers::HealthRegistry,
     ) -> Self {
         let selector = Selector::new(registry.clone());
         Self {
@@ -47,6 +49,7 @@ impl Pipeline {
             selector,
             http,
             db,
+            health,
         }
     }
 
@@ -131,6 +134,11 @@ impl Pipeline {
 
         let registry = self.registry.clone();
         let config = self.config.clone();
+        let health_hook = super::fallback::HealthHook {
+            registry: self.health.clone(),
+            failure_threshold: cfg.retry.max_same_provider_retries.max(1),
+            cooldown_secs: 60, // default; tunable via config in phase 2
+        };
         let result = fallback::execute(plan, move |pid: &str| {
             let r = registry.clone();
             let c = config.clone();
@@ -152,7 +160,7 @@ impl Pipeline {
                     key,
                 })
             }
-        })
+        }, &health_hook)
         .await?;
 
         self.log_completion(&routed, &result).await;
