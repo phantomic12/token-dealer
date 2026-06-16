@@ -24,9 +24,9 @@ impl Selector {
     }
 
     /// Resolve a fully-qualified `provider/model` string.
-    pub fn route_explicit(&self, model_ref: &str) -> Option<SelectedRoute> {
+    pub async fn route_explicit(&self, model_ref: &str) -> Option<SelectedRoute> {
         let (p, m) = ProviderRegistry::split_model_ref(model_ref)?;
-        if self.registry.get(&p).is_none() {
+        if self.registry.get(&p).await.is_none() {
             return None;
         }
         Some(SelectedRoute {
@@ -36,8 +36,8 @@ impl Selector {
     }
 
     /// Resolve a tier to the configured primary model.
-    pub fn route_tier(&self, config: &RouterConfig, tier: Tier) -> Option<SelectedRoute> {
+    pub async fn route_tier(&self, config: &RouterConfig, tier: Tier) -> Option<SelectedRoute> {
         let primary = config.primary_for_tier(tier)?;
-        self.route_explicit(primary)
+        self.route_explicit(primary).await
     }
 }

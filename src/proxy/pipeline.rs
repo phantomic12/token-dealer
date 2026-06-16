@@ -62,10 +62,12 @@ impl Pipeline {
         let route = if let Some(m) = model_override {
             self.selector
                 .route_explicit(&m)
+                .await
                 .ok_or_else(|| AppError::BadRequest(format!("unknown provider in model ref: {m}")))?
         } else {
             self.selector
                 .route_tier(&cfg, tier)
+                .await
                 .ok_or_else(|| {
                     AppError::Internal(format!("no primary configured for tier {}", tier.as_str()))
                 })?
@@ -106,6 +108,7 @@ impl Pipeline {
         let adapter = self
             .registry
             .get(&routed.route.provider_id)
+            .await
             .ok_or_else(|| AppError::Internal(format!("provider disappeared: {}", routed.route.provider_id)))?;
         adapter
             .complete(&routed.canonical, &routed.key, &self.http)
@@ -119,6 +122,7 @@ impl Pipeline {
         let adapter = self
             .registry
             .get(&routed.route.provider_id)
+            .await
             .ok_or_else(|| AppError::Internal(format!("provider disappeared: {}", routed.route.provider_id)))?;
         adapter
             .stream(&routed.canonical, &routed.key, &self.http)

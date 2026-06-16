@@ -242,7 +242,7 @@ pub fn lookup(pt: ProviderType) -> Option<ManifestProvider> {
 /// the `[[providers]]` `id` the user picks.
 pub fn resolve_alias(id: &str) -> Option<ProviderType> {
     let lower = id.to_lowercase().replace(['.', '_', ' '], "-");
-    Some(match lower.as_str() {
+    let resolved = match lower.as_str() {
         "anthropic" => ProviderType::Anthropic,
         "openai" | "openai-completions" => ProviderType::Openai,
         "google" | "gemini" => ProviderType::Google,
@@ -257,12 +257,12 @@ pub fn resolve_alias(id: &str) -> Option<ProviderType> {
         "qwen" | "alibaba" | "dashscope" => ProviderType::Qwen,
         "moonshot" | "kimi" | "moonshotai" => ProviderType::Moonshot,
         "zai" | "z-ai" | "z.ai" | "zhipuai" => ProviderType::Zai,
-        "xiaomi" | "mimo" | "xiaomi-mimo" | "xiaomi-mimo-mimo" => ProviderType::Xiaomi,
+        "xiaomi" | "mimo" | "xiaomi-mimo" => ProviderType::Xiaomi,
         "minimax" => ProviderType::Minimax,
         "byteplus" | "byteplus-plan" | "modelark" | "modelark-coding-plan" => {
             ProviderType::Byteplus
         }
-        "nvidia" | "nvidia-nim" | "nvidia-nim-nim" | "nim" => ProviderType::Nvidia,
+        "nvidia" | "nvidia-nim" | "nim" => ProviderType::Nvidia,
         "opencode-go" | "opencodego" => ProviderType::OpencodeGo,
         "opencode-zen" | "opencodezen" => ProviderType::OpencodeZen,
         "kilo" | "kilocode" | "kilo-code" => ProviderType::Kilo,
@@ -270,13 +270,43 @@ pub fn resolve_alias(id: &str) -> Option<ProviderType> {
         "copilot" | "github-copilot" | "githubcopilot" => ProviderType::GithubCopilot,
         "gitlawb" | "opengateway" | "open-gateway" | "gl" => ProviderType::Gitlawb,
         "ollama" => ProviderType::Ollama,
-        "ollama-cloud" | "ollama-cloud-cloud" => ProviderType::OllamaCloud,
+        "ollama-cloud" => ProviderType::OllamaCloud,
         "llamacpp" | "llama-cpp" | "llama.cpp" => ProviderType::LlamaCpp,
-        "lmstudio" | "lm-studio" | "lm-studio-studio" => ProviderType::LmStudio,
+        "lmstudio" | "lm-studio" => ProviderType::LmStudio,
         "responses" | "openai-responses" | "codex" => ProviderType::Responses,
         "generic" | "custom" | "openai-compat" | "openai-compatible" => {
             return None;
         }
         _ => return None,
-    })
+    };
+    Some(resolved)
 }
+
+/// Public alias table for the UI to render. Pairs (alias, canonical).
+pub const ALIASES: &[(&str, &str)] = &[
+    ("opengateway", "gitlawb"),
+    ("open-gateway", "gitlawb"),
+    ("gl", "gitlawb"),
+    ("kimi", "moonshot"),
+    ("moonshotai", "moonshot"),
+    ("mimo", "xiaomi"),
+    ("xiaomi-mimo", "xiaomi"),
+    ("alibaba", "qwen"),
+    ("dashscope", "qwen"),
+    ("nim", "nvidia"),
+    ("nvidia-nim", "nvidia"),
+    ("github-copilot", "github-copilot"),
+    ("copilot", "github-copilot"),
+    ("cmd", "commandcode"),
+    ("command-code", "commandcode"),
+    ("kilocode", "kilo"),
+    ("kilo-code", "kilo"),
+    ("grok", "xai"),
+    ("x-ai", "xai"),
+    ("mistralai", "mistral"),
+    ("codex", "responses"),
+    ("openai-responses", "responses"),
+    ("llama-cpp", "llamacpp"),
+    ("llama.cpp", "llamacpp"),
+    ("lm-studio", "lmstudio"),
+];

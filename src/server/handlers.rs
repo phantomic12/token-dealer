@@ -21,16 +21,14 @@ pub async fn health() -> impl IntoResponse {
 }
 
 pub async fn list_models(State(state): State<AppState>) -> impl IntoResponse {
-    let ids = state.pipeline.registry.ids();
+    let providers = state.pipeline.registry.list().await;
     let mut models = Vec::new();
-    for pid in ids {
-        if let Some(adapter) = state.pipeline.registry.get(&pid) {
-            models.push(json!({
-                "id": format!("{}/{}", pid, adapter.default_model()),
-                "object": "model",
-                "owned_by": pid,
-            }));
-        }
+    for (pid, default_model) in providers {
+        models.push(json!({
+            "id": format!("{pid}/{default_model}"),
+            "object": "model",
+            "owned_by": pid,
+        }));
     }
     Json(json!({"object": "list", "data": models}))
 }

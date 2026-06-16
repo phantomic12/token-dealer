@@ -9,6 +9,26 @@ High-performance LLM routing proxy in Rust. Sits between clients and providers, 
 - **SSE streaming** with OpenAI-shape chunks + `data: [DONE]` terminator
 - **X-Router-\* response headers** — `x-router-provider`, `x-router-model`, `x-router-tier`, `x-router-request-id`
 
+## WebUI
+
+Server-rendered HTML + HTMX. No build step, no Node toolchain — the binary serves it directly. Open `http://localhost:8080/ui/` in a browser.
+
+Three pages:
+- **Dashboard** — bind address, config path, provider count, quick-start curl examples
+- **Providers** — list + add form (28 manifest types in the dropdown). Add/remove writes to the in-memory registry + persists to `token-dealer.toml`. Each row shows a masked key indicator.
+- **Tiers** — per-tier primary editable inline; the form posts to `POST /admin/tiers/:tier` and HTMX swaps the row.
+
+Admin JSON endpoints (for scripts / curl):
+```
+POST   /admin/providers              # body = ProviderConfig JSON
+DELETE /admin/providers/:id
+POST   /admin/tiers/:tier            # body = { primary, fallbacks, ... }
+POST   /admin/config/save            # force a TOML flush
+POST   /admin/config/reload          # re-read TOML from disk
+```
+
+**Security note:** the UI is unauthenticated. For local-only use, bind to `127.0.0.1:8080`. For LAN/internet exposure, set `[auth] enabled = true` (inbound API-key enforcement, phase 2) and put it behind a reverse proxy with your own auth.
+
 ## Quickstart (local)
 
 ```bash

@@ -1,5 +1,7 @@
-//! Provider registry. Holds configured adapters and resolves
-//! `model_id` lookups. Built once at startup; cheap to clone via Arc.
+//! Provider registry. Holds the configured adapters and resolves
+//! `model_id` lookups. Mutable via an `RwLock` so the admin UI can
+//! add/remove providers at runtime; on startup it's seeded from the
+//! TOML config.
 //!
 //! `from_configs` is the single place that maps a `ProviderType` to an
 //! adapter. Adding a new provider = one row in `manifest::lookup` +
@@ -13,34 +15,69 @@ use super::manifest;
 use crate::config::types::{ProviderConfig, ProviderType};
 use std::collections::HashMap;
 use std::sync::Arc;
+use tokio::sync::RwLock;
 
 pub struct ProviderRegistry {
-    /// provider_id → adapter
-    providers: HashMap<String, Arc<dyn ProviderAdapter>>,
+    providers: Arc<RwLock<HashMap<String, Arc<dyn ProviderAdapter>>>>,
 }
 
 impl ProviderRegistry {
     pub fn from_configs(configs: &[ProviderConfig]) -> anyhow::Result<Self> {
-        let mut providers = HashMap::new();
+        let mut map = HashMap::new();
         for cfg in configs {
             let key = resolve_key(&cfg.id, cfg.key.as_deref());
-            let adapter: Arc<dyn ProviderAdapter> = build_adapter(cfg)?;
+            let adapter = build_adapter(cfg)?;
             if key.is_empty() {
                 tracing::warn!(provider = %cfg.id, "no API key configured; requests to this provider will fail");
             } else {
                 tracing::info!(provider = %cfg.id, "registered (key len = {})", key.len());
             }
-            providers.insert(cfg.id.clone(), adapter);
+            map.insert(cfg.id.clone(), adapter);
         }
-        Ok(Self { providers })
+        Ok(Self {
+            providers: Arc::new(RwLock::new(map)),
+        })
     }
 
-    pub fn get(&self, id: &str) -> Option<Arc<dyn ProviderAdapter>> {
-        self.providers.get(id).cloned()
+    /// Read-only clone of the current provider list (just the IDs).
+    pub async fn ids(&self) -> Vec<String> {
+        self.providers.read().await.keys().cloned().collect()
     }
 
-    pub fn ids(&self) -> Vec<String> {
-        self.providers.keys().cloned().collect()
+    /// Read-only handle to a single provider. Clones the Arc.
+    pub async fn get(&self, id: &str) -> Option<Arc<dyn ProviderAdapter>> {
+        self.providers.read().await.get(id).cloned()
+    }
+
+    /// Snapshot of every (id, default_model) pair for `/v1/models`.
+    pub async fn list(&self) -> Vec<(String, String)> {
+        let g = self.providers.read().await;
+        g.iter()
+            .map(|(id, adapter)| (id.clone(), adapter.default_model().to_string()))
+            .collect()
+    }
+
+    /// Live add. Used by the admin UI and POST /admin/providers.
+    pub async fn add(&self, cfg: &ProviderConfig) -> anyhow::Result<()> {
+        let adapter = build_adapter(cfg)?;
+        let key = resolve_key(&cfg.id, cfg.key.as_deref());
+        if key.is_empty() {
+            tracing::warn!(provider = %cfg.id, "added with no API key");
+        } else {
+            tracing::info!(provider = %cfg.id, "added (key len = {})", key.len());
+        }
+        self.providers.write().await.insert(cfg.id.clone(), adapter);
+        Ok(())
+    }
+
+    /// Live remove. Returns true if a provider was actually removed.
+    pub async fn remove(&self, id: &str) -> bool {
+        let mut g = self.providers.write().await;
+        let removed = g.remove(id).is_some();
+        if removed {
+            tracing::info!(provider = %id, "removed");
+        }
+        removed
     }
 
     /// Resolve `provider/model` notation. Returns (provider_id, model_id).
@@ -87,8 +124,6 @@ fn build_adapter(cfg: &ProviderConfig) -> anyhow::Result<Arc<dyn ProviderAdapter
             Arc::new(ResponsesAdapter::new(&cfg.id, base_url, default_model))
         }
         ProviderType::Generic => Arc::new(GenericAdapter::new(&cfg.id, base_url, default_model)),
-        // Everything else is OpenAI-compat — use the OpenAI adapter with
-        // the right base_url + path.
         _ => Arc::new(OpenAiAdapter::with_path(
             &cfg.id,
             base_url,

@@ -47,4 +47,37 @@ impl ConfigService {
     pub fn path(&self) -> &Path {
         &self.path
     }
+
+    /// Mutate the active config in memory + persist to disk.
+    /// Returns the previous snapshot so callers can diff/rollback on error.
+    pub async fn update_with<F>(&self, f: F) -> anyhow::Result<RouterConfig>
+    where
+        F: FnOnce(&mut RouterConfig),
+    {
+        let prev = {
+            let mut g = self.inner.write().await;
+            let mut next = g.clone();
+            f(&mut next);
+            let prev = g.clone();
+            *g = next.clone();
+            next
+        };
+        self.save_to_disk(&prev).await?;
+        Ok(prev)
+    }
+
+    /// Write the current in-memory config to the TOML file. Useful when
+    /// other code paths mutate the snapshot via `inner` and the caller
+    /// wants to flush without going through `update_with`.
+    pub async fn save_to_disk(&self, snapshot: &RouterConfig) -> anyhow::Result<()> {
+        let serialized = toml::to_string_pretty(snapshot)?;
+        if let Some(parent) = self.path.parent() {
+            if !parent.as_os_str().is_empty() {
+                tokio::fs::create_dir_all(parent).await.ok();
+            }
+        }
+        tokio::fs::write(&*self.path, serialized).await?;
+        tracing::info!(path = %self.path.display(), "config saved to disk");
+        Ok(())
+    }
 }
