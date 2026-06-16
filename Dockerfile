@@ -8,7 +8,7 @@ WORKDIR /build
 COPY Cargo.toml Cargo.lock* ./
 RUN mkdir -p src && echo "fn main(){}" > src/main.rs && \
     cargo build --release --bin token-dealer && \
-    rm -rf src target/release/token-dealer target/release/deps/token_dealer-*
+    rm -rf src target/release/token-dealer target/release/deps/token-dealer-*
 
 COPY . .
 RUN cargo build --release --bin token-dealer
