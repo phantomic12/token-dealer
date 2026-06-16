@@ -6,7 +6,7 @@ WORKDIR /build
 
 # Cache deps separately
 COPY Cargo.toml Cargo.lock* ./
-RUN mkdir -p src && echo "fn main(){}" > src/main.rs && \
+RUN mkdir -p src && echo "fn main(){}" > src/main.rs && echo "" > src/lib.rs && \
     cargo build --release --bin token-dealer && \
     rm -rf src target/release/token-dealer target/release/deps/token-dealer-*
 
