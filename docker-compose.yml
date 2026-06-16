@@ -1,0 +1,25 @@
+services:
+  token-dealer:
+    image: ghcr.io/phantomic12/token-dealer:latest
+    container_name: token-dealer
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - TOKEN_DEALER_CONFIG=/data/token-dealer.toml
+      - RUST_LOG=info
+      # Provider keys — pick what you need
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+    volumes:
+      - ./token-dealer.toml:/data/token-dealer.toml:ro
+      - token-dealer-data:/data
+    healthcheck:
+      test: ["CMD", "/app/token-dealer", "--healthcheck"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+
+volumes:
+  token-dealer-data:

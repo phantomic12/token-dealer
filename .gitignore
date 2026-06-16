@@ -1,0 +1,6 @@
+target/
+**/*.rs.bk
+Cargo.lock.bak
+.env
+*.local.toml
+.DS_Store

@@ -1,0 +1,101 @@
+# token-dealer — example config
+# Copy to token-dealer.toml and edit, or mount as TOKEN_DEALER_CONFIG.
+
+[server]
+bind = "0.0.0.0:8080"
+log_level = "info"
+
+[auth]
+enabled = false
+
+# Provider credentials are resolved in this order:
+#   1. ENV var `{PROVIDER_ID}_API_KEY`
+#   2. Env-var interpolation in `key` field
+#   3. Encrypted SQLite store (UI-managed, post-MVP)
+#
+# `key = "raw-string"` works for testing but is discouraged.
+
+[[providers]]
+id = "anthropic"
+type = "anthropic"
+key = "${ANTHROPIC_API_KEY}"
+base_url = "https://api.anthropic.com"
+
+[[providers]]
+id = "openai"
+type = "openai"
+key = "${OPENAI_API_KEY}"
+base_url = "https://api.openai.com"
+
+[[providers]]
+id = "ollama"
+type = "generic"
+key = "ollama"
+base_url = "http://host.docker.internal:11434"
+
+# Per-tier routing. `tier/model` syntax in client requests also works
+# and bypasses this entirely (single-model pass-through).
+[tiers.simple]
+primary = "anthropic/claude-haiku-4-5"
+allow_tier_downgrade = false
+[tiers.simple.timeouts]
+connect_ms = 5000
+read_ms = 15000
+per_attempt_ms = 20000
+
+[tiers.standard]
+primary = "anthropic/claude-sonnet-4-5"
+allow_tier_downgrade = true
+downgrade_to = "simple"
+[tiers.standard.timeouts]
+connect_ms = 8000
+read_ms = 30000
+per_attempt_ms = 45000
+
+[tiers.complex]
+primary = "anthropic/claude-opus-4-5"
+allow_tier_downgrade = true
+downgrade_to = "standard"
+[tiers.complex.timeouts]
+connect_ms = 8000
+read_ms = 45000
+per_attempt_ms = 90000
+
+[tiers.reasoning]
+primary = "anthropic/claude-opus-4-5"
+allow_tier_downgrade = false
+[tiers.reasoning.timeouts]
+connect_ms = 10000
+read_ms = 120000
+per_attempt_ms = 180000
+
+[tiers.high_context]
+primary = "anthropic/claude-sonnet-4-5"
+allow_tier_downgrade = false
+min_context_window = 100000
+[tiers.high_context.timeouts]
+connect_ms = 10000
+read_ms = 60000
+per_attempt_ms = 300000
+
+[tiers.multimodal]
+primary = "anthropic/claude-sonnet-4-5"
+allow_tier_downgrade = false
+[tiers.multimodal.timeouts]
+connect_ms = 15000
+read_ms = 60000
+per_attempt_ms = 120000
+
+[detection]
+default_tier = "standard"
+session_window_minutes = 30
+session_lookback = 5
+
+[retry]
+max_same_provider_retries = 1
+fixed_retry_wait_ms = 1500
+max_retry_after_ms = 10000
+request_budget_ms = 120000
+
+[streaming]
+buffer_threshold_tokens = 2048
