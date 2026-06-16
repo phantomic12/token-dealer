@@ -5,5 +5,4 @@ target/
 .dockerignore
 Dockerfile
 docker-compose.yml
-token-dealer.toml.example
 tests/
