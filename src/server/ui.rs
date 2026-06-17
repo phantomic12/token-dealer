@@ -1014,16 +1014,15 @@ fn render_wizard_step2(provider_type: &str) -> String {
                   }}
                   const popup = window.open(
                     body.authorize_url,
-                    'oauth-{t}',
-                    'width=600,height=720,menubar=no,toolbar=no'
+                    '_blank'
                   );
                   if (!popup) {{
                     btn.disabled = false;
                     btn.textContent = 'Connect with {t}';
-                    alert('Popup blocked — please allow popups for this origin, then click again.');
+                    alert('Tab blocked — please allow popups for this origin, then click again.');
                     return;
                   }}
-                  // Listen for the success postMessage from the popup.
+                  // Listen for the success postMessage from the popup tab.
                   window.addEventListener('message', (e) => {{
                     if (e.data && e.data.type === 'oauth_complete' && e.data.provider === '{t}') {{
                       window.location.href = '/ui/providers?flash=' +
@@ -1031,10 +1030,10 @@ fn render_wizard_step2(provider_type: &str) -> String {
                         '&provider={t}';
                     }}
                   }});
-                  // Detect popup closed without completing.
-                  const t = setInterval(() => {{
+                  // Detect when the tab is closed without completing.
+                  const tk = setInterval(() => {{
                     if (popup.closed) {{
-                      clearInterval(t);
+                      clearInterval(tk);
                       btn.disabled = false;
                       btn.textContent = 'Connect with {t}';
                     }}
