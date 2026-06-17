@@ -930,6 +930,79 @@ fn render_wizard_step2(provider_type: &str) -> String {
         String::new()
     };
 
+    let js = r##"
+<script>
+(function() {
+  const btn = document.getElementById('fetch-models-btn');
+  if (!btn) return;
+  const status = document.getElementById('model-status');
+  const input = document.getElementById('default-model-input');
+  const dropdown = document.getElementById('model-dropdown');
+  const form = document.getElementById('provider-form');
+  const keyInput = document.getElementById('key-input');
+  btn.addEventListener('click', async () => {
+    btn.disabled = true;
+    status.textContent = '(fetching…)';
+    dropdown.innerHTML = '';
+    const fd = new FormData(form);
+    const body = {
+      id: fd.get('id') || 'tmp',
+      type: fd.get('type') || 'openai',
+      key: fd.get('key') || '',
+      base_url: fd.get('base_url') || undefined,
+      path: fd.get('path') || undefined,
+      default_model: fd.get('default_model') || undefined,
+    };
+    try {
+      const r = await fetch('/admin/providers/list-models', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const j = await r.json();
+      if (!r.ok) {
+        status.innerHTML = '<span style="color:var(--red)">(error: ' + (j.error || 'unknown') + ')</span>';
+        return;
+      }
+      const models = j.models || [];
+      if (models.length === 0) {
+        status.textContent = '(provider returned 0 models)';
+        return;
+      }
+      status.textContent = '(found ' + models.length + ' models)';
+      const sel = document.createElement('select');
+      sel.id = 'model-picker-select';
+      sel.style.cssText = 'width:100%;margin-top:4px;padding:6px;font-family:var(--mono);font-size:12px;';
+      const current = (fd.get('default_model') || '').toString();
+      sel.innerHTML = '<option value="">— pick from ' + models.length + ' —</option>' +
+        models.map(m => {
+          const selAttr = m === current ? ' selected' : '';
+          return '<option value="' + m.replace(/"/g, '&quot;') + '"' + selAttr + '>' + m + '</option>';
+        }).join('');
+      sel.addEventListener('change', () => {
+        if (sel.value) input.value = sel.value;
+      });
+      if (models.length === 1) {
+        input.value = models[0];
+      }
+      dropdown.appendChild(sel);
+    } catch (e) {
+      status.innerHTML = '<span style="color:var(--red)">(network: ' + e + ')</span>';
+    } finally {
+      btn.disabled = false;
+    }
+  });
+  if (keyInput) {
+    let timer = null;
+    keyInput.addEventListener('input', () => {
+      clearTimeout(timer);
+      if (keyInput.value.length < 8) return;
+      timer = setTimeout(() => btn.click(), 1200);
+    });
+  }
+})();
+</script>
+"##;
     format!(
         r##"
 <h1>Add a provider</h1>
@@ -958,11 +1031,16 @@ fn render_wizard_step2(provider_type: &str) -> String {
       </div>
       <div>
         <label>{key_label}</label>
-        <input name="key" value="" placeholder="{key_placeholder}" autofocus />
+        <input name="key" id="key-input" value="" placeholder="{key_placeholder}" autofocus />
       </div>
       <div>
-        <label>Default model</label>
-        <input name="default_model" value="{default_model}" />
+        <label>Default model <span class="muted" id="model-status"></span></label>
+        <input name="default_model" id="default-model-input" value="{default_model}" />
+        <button type="button" id="fetch-models-btn" class="secondary"
+                style="margin-top: 4px;">
+          Fetch model list from API
+        </button>
+        <div id="model-dropdown"></div>
       </div>
     </div>
     <div class="row">
@@ -993,6 +1071,7 @@ fn render_wizard_step2(provider_type: &str) -> String {
 </div>
 
 <p style="margin-top: 16px;"><a href="/ui/providers/new">← back to provider picker</a></p>
+{js}
 "##,
         display_name = display_name,
         local_badge = if local_only { "local" } else { "healthy" },

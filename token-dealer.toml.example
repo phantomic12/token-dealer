@@ -24,6 +24,7 @@ enabled = false
 id = "anthropic"
 type = "anthropic"
 key = "${ANTHROPIC_API_KEY}"
+default_model = "claude-sonnet-4-5"
 # base_url + path filled from manifest defaults; override here for staging.
 
 # [[providers]]
@@ -47,6 +48,7 @@ key = "${ANTHROPIC_API_KEY}"
 id = "openai"
 type = "openai"
 key = "${OPENAI_API_KEY}"
+default_model = "gpt-4o-mini"
 
 # [[providers]]
 # id = "openrouter"

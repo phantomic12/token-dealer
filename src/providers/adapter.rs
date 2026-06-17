@@ -2,9 +2,9 @@
 //! without `async-trait` by returning `Pin<Box<dyn Future + Send>>`
 //! — adds a small indirection but keeps the registry heterogeneous.
 
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
 use crate::schema::canonical::{CanonicalChunk, CanonicalRequest, CanonicalResponse};
-use futures::future::BoxFuture;
+use futures::future::{BoxFuture, FutureExt};
 use futures::stream::BoxStream;
 use http::{HeaderName, HeaderValue};
 
@@ -52,4 +52,50 @@ pub trait ProviderAdapter: Send + Sync {
         key: &'a str,
         client: &'a reqwest::Client,
     ) -> BoxFuture<'a, AppResult<ProviderStream>>;
+
+    /// Live model list. Default hits the OpenAI-compat `/v1/models`
+    /// endpoint with `Authorization: Bearer <key>`. Adapters with a
+    /// different shape (Anthropic, Google) override this.
+    fn list_models<'a>(
+        &'a self,
+        key: &'a str,
+        client: &'a reqwest::Client,
+    ) -> BoxFuture<'a, AppResult<Vec<String>>> {
+        async move {
+            let url = format!("{}/v1/models", self.base_url().trim_end_matches('/'));
+            let resp = client
+                .get(&url)
+                .header("authorization", format!("Bearer {key}"))
+                .send()
+                .await
+                .map_err(|e| AppError::Internal(format!("models list: {e}")))?;
+            if !resp.status().is_success() {
+                let status = resp.status();
+                let text = resp.text().await.unwrap_or_default();
+                return Err(AppError::Internal(format!(
+                    "models list {} {}: {}",
+                    status.as_u16(),
+                    status.canonical_reason().unwrap_or(""),
+                    text.chars().take(200).collect::<String>()
+                )));
+            }
+            let v: serde_json::Value = resp
+                .json()
+                .await
+                .map_err(|e| AppError::Internal(format!("models parse: {e}")))?;
+            // OpenAI shape: { "data": [{"id": "...", ...}, ...] }
+            let models = v
+                .get("data")
+                .and_then(|d| d.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|m| m.get("id").and_then(|i| i.as_str()))
+                        .map(String::from)
+                        .collect()
+                })
+                .unwrap_or_default();
+            Ok(models)
+        }
+        .boxed()
+    }
 }

@@ -12,6 +12,8 @@ use crate::error::AppError;
 use crate::error::AppResult;
 use crate::schema::canonical::*;
 use async_stream::try_stream;
+use futures::future::BoxFuture;
+use futures::FutureExt;
 use futures::StreamExt;
 use http::{HeaderName, HeaderValue};
 use serde_json::{json, Value};
@@ -151,6 +153,52 @@ impl ProviderAdapter for AnthropicAdapter {
             let v: Value = resp.json().await?;
             parse_anthropic_response(&v, &self.id)
         })
+    }
+
+    /// Anthropic also exposes GET /v1/models but the auth is
+    /// x-api-key + anthropic-version, not Bearer.
+    fn list_models<'a>(
+        &'a self,
+        key: &'a str,
+        client: &'a reqwest::Client,
+    ) -> BoxFuture<'a, AppResult<Vec<String>>> {
+        async move {
+            let url = format!("{}/v1/models", self.base_url.trim_end_matches('/'));
+            let resp = client
+                .get(&url)
+                .header("x-api-key", key)
+                .header("anthropic-version", &self.version)
+                .send()
+                .await
+                .map_err(|e| AppError::Internal(format!("anthropic models list: {e}")))?;
+            if !resp.status().is_success() {
+                let status = resp.status();
+                let text = resp.text().await.unwrap_or_default();
+                return Err(AppError::Internal(format!(
+                    "anthropic models list {} {}: {}",
+                    status.as_u16(),
+                    status.canonical_reason().unwrap_or(""),
+                    text.chars().take(200).collect::<String>()
+                )));
+            }
+            let v: Value = resp
+                .json()
+                .await
+                .map_err(|e| AppError::Internal(format!("anthropic models parse: {e}")))?;
+            // Anthropic shape: { "data": [{"id": "claude-...", ...}, ...] }
+            let models = v
+                .get("data")
+                .and_then(|d| d.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|m| m.get("id").and_then(|i| i.as_str()))
+                        .map(String::from)
+                        .collect()
+                })
+                .unwrap_or_default();
+            Ok(models)
+        }
+        .boxed()
     }
 
     fn stream<'a>(

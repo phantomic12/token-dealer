@@ -473,17 +473,53 @@ pub async fn validate_provider_type(Json(body): Json<serde_json::Value>) -> Resp
     }
 }
 
-/// DEBUG: dump the providers list as the config sees it.
-pub async fn debug_providers(State(state): State<AppState>) -> Response {
-    let snap = state.config.snapshot().await;
-    let mut s = String::from("snapshot providers:\n");
-    for p in &snap.providers {
-        s.push_str(&format!(
-            "  - id={} type={:?} default_model={:?} key_present={}\n",
-            p.id, p.provider_type, p.default_model, p.key.is_some()
-        ));
+/// Live model list. POST /admin/providers/list-models with the same
+/// body shape as add-provider (`id`, `type`, `key`, `base_url`,
+/// `path`, `default_model`). Returns `{"models": ["...", "..."]}`
+/// or a 4xx with an error message.
+pub async fn list_provider_models(
+    State(state): State<AppState>,
+    Json(body): Json<ProviderConfig>,
+) -> Response {
+    if body.id.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "id required"})),
+        )
+            .into_response();
     }
-    (StatusCode::OK, s).into_response()
+    let key = match state
+        .key_store
+        .get(&body.id)
+        .await
+        .ok()
+        .flatten()
+        .or_else(|| body.key.clone())
+    {
+        Some(k) => k,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "no key configured; paste the API key in the form first"})),
+            )
+                .into_response();
+        }
+    };
+    match state.pipeline.registry.build_transient(&body) {
+        Ok(adapter) => match adapter.list_models(&key, &state.pipeline.http).await {
+            Ok(models) => (StatusCode::OK, Json(json!({"models": models}))).into_response(),
+            Err(e) => (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({"error": format!("{e}")})),
+            )
+                .into_response(),
+        },
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": format!("build adapter: {e}")})),
+        )
+            .into_response(),
+    }
 }
 
 /// Test a provider config without persisting it. POST /admin/providers/test

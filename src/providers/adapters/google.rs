@@ -12,6 +12,8 @@ use crate::error::AppError;
 use crate::error::AppResult;
 use crate::schema::canonical::*;
 use async_stream::try_stream;
+use futures::future::BoxFuture;
+use futures::FutureExt;
 use futures::StreamExt;
 use http::{HeaderName, HeaderValue};
 use serde_json::{json, Value};
@@ -139,6 +141,52 @@ impl ProviderAdapter for GoogleAdapter {
             body["generationConfig"] = Value::Object(gen_config);
         }
         body
+    }
+
+    /// Google passes the API key as a query param, not a header.
+    /// Response shape: { "models": [{"name": "models/gemini-...", ...}] }
+    fn list_models<'a>(
+        &'a self,
+        key: &'a str,
+        client: &'a reqwest::Client,
+    ) -> BoxFuture<'a, AppResult<Vec<String>>> {
+        async move {
+            let url = format!("{}/v1beta/models?key={key}", self.base_url);
+            let resp = client
+                .get(&url)
+                .send()
+                .await
+                .map_err(|e| AppError::Internal(format!("google models list: {e}")))?;
+            if !resp.status().is_success() {
+                let status = resp.status();
+                let text = resp.text().await.unwrap_or_default();
+                return Err(AppError::Internal(format!(
+                    "google models list {} {}: {}",
+                    status.as_u16(),
+                    status.canonical_reason().unwrap_or(""),
+                    text.chars().take(200).collect::<String>()
+                )));
+            }
+            let v: Value = resp
+                .json()
+                .await
+                .map_err(|e| AppError::Internal(format!("google models parse: {e}")))?;
+            let models = v
+                .get("models")
+                .and_then(|m| m.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|m| {
+                            m.get("name")
+                                .and_then(|n| n.as_str())
+                                .map(|s| s.strip_prefix("models/").unwrap_or(s).to_string())
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            Ok(models)
+        }
+        .boxed()
     }
 
     fn complete<'a>(

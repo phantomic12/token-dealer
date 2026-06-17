@@ -20,11 +20,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN useradd -r -u 1000 -m -d /data -s /usr/sbin/nologin dealer
 
+RUN mkdir -p /data && chown -R dealer:dealer /data
 WORKDIR /app
 COPY --from=builder /build/target/release/token-dealer /app/token-dealer
-COPY token-dealer.toml.example /app/token-dealer.toml
+# Default config is empty — the user is expected to mount their own
+# config at /data/token-dealer.toml (TOKEN_DEALER_CONFIG below) OR
+# pass --config /path/to/config.toml. Without a mounted config, the
+# server starts with an empty provider list and the manifest defaults
+# fill in the model names for /v1/models.
 
-ENV TOKEN_DEALER_CONFIG=/app/token-dealer.toml \
+ENV TOKEN_DEALER_CONFIG=/data/token-dealer.toml \
     RUST_LOG=info \
     PORT=8080
 
