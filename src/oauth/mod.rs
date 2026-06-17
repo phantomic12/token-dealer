@@ -470,52 +470,123 @@ pub async fn start_device_flow(
     if cfg.device_code_url.is_empty() {
         anyhow::bail!("provider {} is not device_code", provider_id);
     }
-    let body = serde_json::json!({
-        "client_id": cfg.client_id,
-        "scope": "openid profile email offline_access",
-    });
+    let scope = if cfg.scope.is_empty() {
+        "openid profile email offline_access".to_string()
+    } else {
+        cfg.scope.to_string()
+    };
+    // All device-code providers (GitHub, Kiro, MiniMax) accept
+    // application/x-www-form-urlencoded — use that instead of JSON.
+    // MiniMax also requires a PKCE code_challenge even on the
+    // device-code endpoint (it reports "code_challenge is required"
+    // otherwise).
+    let verifier = generate_pkce_verifier();
+    let challenge = pkce_challenge_s256(&verifier);
+    let mut form = format!(
+        "client_id={}&scope={}&code_challenge={}&code_challenge_method=S256",
+        urlencoding(&cfg.client_id),
+        urlencoding(&scope),
+        urlencoding(&challenge),
+    );
+    // GitHub Copilot + Kiro don't need PKCE on device code request;
+    // MiniMax requires it. The manifest flag guides us.
+    if !cfg.device_response_camelcase {
+        // Remove the PKCE params for standard providers that don't
+        // expect them (they're harmless to send, but some servers
+        // reject unknown params). GitHub Copilot accepts them but
+        // also works without — prefer matching the upstream
+        // spec exactly.
+        form = format!(
+            "client_id={}&scope={}",
+            urlencoding(&cfg.client_id),
+            urlencoding(&scope),
+        );
+    }
     let resp = self
         .http
         .post(cfg.device_code_url)
-        .json(&body)
+        .header("content-type", "application/x-www-form-urlencoded")
+        .header("accept", "application/json")
+        .body(form)
         .send()
         .await?;
     if !resp.status().is_success() {
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
-        anyhow::bail!("device_code request failed: {} {}: {}", status.as_u16(), status.canonical_reason().unwrap_or(""), text);
+        anyhow::bail!("device_code request failed: {} {}: {}",
+            status.as_u16(), status.canonical_reason().unwrap_or(""), text);
     }
     let v: serde_json::Value = resp.json().await?;
-    let device_code = v
-        .get("device_code")
-        .and_then(|x| x.as_str())
-        .ok_or_else(|| anyhow::anyhow!("device_code response missing device_code"))?
-        .to_string();
-    let user_code = v
-        .get("user_code")
-        .and_then(|x| x.as_str())
-        .ok_or_else(|| anyhow::anyhow!("device_code response missing user_code"))?
-        .to_string();
-    let verification_uri = v
-        .get("verification_uri")
-        .or_else(|| v.get("verification_url"))
-        .and_then(|x| x.as_str())
-        .ok_or_else(|| anyhow::anyhow!("device_code response missing verification_uri"))?
-        .to_string();
-    let interval = v
-        .get("interval")
-        .and_then(|x| x.as_u64())
-        .unwrap_or(5);
-    let expires_in = v
-        .get("expires_in")
-        .and_then(|x| x.as_u64())
-        .unwrap_or(600);
 
-    // Store device_code for poll
+    // MiniMax returns a completely different response shape:
+    //   { base_resp: { status_code:0 },
+    //     user_code: "ABCD-EFGH",
+    //     verification_uri: "https://platform.minimax.io/...",
+    //     expired_in: 1781739362487,  // absolute ms timestamp
+    //     interval: 3000 }            // ms
+    // The endpoint at api.minimax.io/oauth/code 307-redirects here;
+    // reqwest follows redirects so we land on the real page.
+    let (device_code, user_code, verification_uri, interval, expires_in) =
+        if cfg.device_response_camelcase {
+            // MiniMax: user_code is the "device code" (there is no
+            // explicit device_code field). Store user_code as our
+            // device_code key; the token exchange sends only
+            // grant_type + client_id + code_verifier.
+            let uc = v.get("user_code").and_then(|x| x.as_str())
+                .ok_or_else(|| anyhow::anyhow!("device_code response missing user_code"))?
+                .to_string();
+            let vu = v.get("verification_uri").and_then(|x| x.as_str())
+                .ok_or_else(|| anyhow::anyhow!("device_code response missing verification_uri"))?
+                .to_string();
+            let iv = v.get("interval").and_then(|x| x.as_u64())
+                .or_else(|| v.get("interval").and_then(|x| x.as_u64()));
+            // expired_in is an absolute Unix-ms timestamp
+            let ei = v.get("expired_in").and_then(|x| x.as_f64()).map(|ms| {
+                let now = chrono::Utc::now().timestamp_millis() as f64;
+                ((ms - now) / 1000.0).max(1.0) as u64
+            })
+            .or_else(|| v.get("expired_in").and_then(|x| x.as_u64().map(|s| s / 1000)));
+            (uc.clone(), uc, vu, iv, ei)
+        } else {
+            let dc = v.get("device_code").and_then(|x| x.as_str())
+                .ok_or_else(|| anyhow::anyhow!("device_code response missing device_code"))?
+                .to_string();
+            let uc = v.get("user_code").and_then(|x| x.as_str())
+                .ok_or_else(|| anyhow::anyhow!("device_code response missing user_code"))?
+                .to_string();
+            let vu = v.get("verification_uri")
+                .or_else(|| v.get("verification_url"))
+                .and_then(|x| x.as_str())
+                .ok_or_else(|| anyhow::anyhow!("device_code response missing verification_uri"))?
+                .to_string();
+            let iv = v.get("interval").and_then(|x| x.as_u64());
+            let ei = v.get("expires_in").and_then(|x| x.as_u64());
+            (dc, uc, vu, iv, ei)
+        };
+
+    // MiniMax returns verification_uri pointing at www.minimax.io
+    // which 307-redirects to the homepage. The real authorize page
+    // lives on platform.minimax.io. Rewrite transparently.
+    let verification_uri = if provider_id == "minimax" {
+        verification_uri.replace("www.minimax.io", "platform.minimax.io")
+    } else {
+        verification_uri
+    };
+
+    let interval = interval.unwrap_or(5);
+    let expires_in = expires_in.unwrap_or(600);
+
+    // Store device_code for poll + PKCE verifier (for MiniMax).
     self.devices
         .write()
         .await
         .insert(device_code.clone(), provider_id.to_string());
+    if cfg.device_response_camelcase {
+        self.pkce_verifiers
+            .write()
+            .await
+            .insert(device_code.clone(), verifier);
+    }
 
     Ok(DeviceFlowInfo {
         device_code,
@@ -544,15 +615,40 @@ pub async fn poll_device_flow(
     let cfg = lookup_manifest_oauth(&provider_id)
         .ok_or_else(|| anyhow::anyhow!("provider {} has no OAuth config", provider_id))?;
 
-    let body = serde_json::json!({
-        "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-        "device_code": device_code,
-        "client_id": cfg.client_id,
-    });
+    // MiniMax uses `urn:ietf:params:oauth:grant-type:user_code`.
+    // Standard device_code flow (GitHub Copilot, Kiro) uses
+    // `urn:ietf:params:oauth:grant-type:device_code`.
+    let is_minimax = provider_id == "minimax";
+    let grant_type = if is_minimax {
+        "urn:ietf:params:oauth:grant-type:user_code"
+    } else {
+        "urn:ietf:params:oauth:grant-type:device_code"
+    };
+    let verifier = if is_minimax {
+        self.pkce_verifiers.write().await.remove(device_code)
+    } else {
+        None
+    };
+    let form = if is_minimax {
+        format!(
+            "grant_type={}&client_id={}&code_verifier={}",
+            urlencoding(grant_type),
+            urlencoding(&cfg.client_id),
+            urlencoding(&verifier.unwrap_or_default()),
+        )
+    } else {
+        format!(
+            "grant_type={}&device_code={}&client_id={}",
+            urlencoding(grant_type),
+            urlencoding(device_code),
+            urlencoding(&cfg.client_id),
+        )
+    };
     let resp = self
         .http
         .post(cfg.token_url)
-        .json(&body)
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(form)
         .send()
         .await?;
     let status = resp.status();

@@ -24,13 +24,14 @@ pub struct ManifestOAuth {
     /// Authorization endpoint for popup_oauth providers. Empty if
     /// not applicable (refresh_token-paste only, or device_code).
     pub authorize_url: &'static str,
-    /// Token endpoint used for authorization_code exchange AND
-    /// refresh_token. Same URL for both grants per OAuth 2.0.
-    pub token_url: &'static str,
     /// Device-code endpoint for device_code providers. POST
     /// returns `{device_code, user_code, verification_uri, ...}`.
     /// Empty if not applicable.
     pub device_code_url: &'static str,
+    /// Token URL for device_code providers (returns the access +
+    /// refresh tokens after the user authorizes the device). The
+    /// main `token_url` above is used for refreshing.
+    pub token_url: &'static str,
     /// For Anthropic-style flows: the page that shows the
     /// authorization code the user copies back. Empty otherwise.
     pub paste_code_redirect_url: &'static str,
@@ -57,6 +58,11 @@ pub struct ManifestOAuth {
     /// code, no refresh — the "code" is actually the access
     /// token + state tuple.
     pub is_anthropic_paste_code: bool,
+    /// Device-code response fields are camelCase (MiniMax) instead
+    /// of the standard snake_case (GitHub Copilot, Kiro). When
+    /// `true`, we read `deviceCode`/`userCode`/`verificationUri`
+    /// instead of `device_code`/`user_code`/`verification_uri`.
+    #[allow(dead_code)] pub device_response_camelcase: bool,
 }
 
 /// Subscription metadata for token-mode providers. These are not
@@ -153,6 +159,7 @@ pub fn lookup(pt: ProviderType) -> Option<ManifestProvider> {
                 extra_authorize_params: &[],
                 requires_pkce: true,
                 is_anthropic_paste_code: true,
+                device_response_camelcase: false,
             }),
             subscription: Some(Subscription {
                 label: "Claude Max / Pro subscription",
@@ -185,6 +192,7 @@ pub fn lookup(pt: ProviderType) -> Option<ManifestProvider> {
                     ("prompt", "consent"), ("include_granted_scopes", "true")],
                 requires_pkce: true,
                 is_anthropic_paste_code: false,
+                device_response_camelcase: false,
             }),
             subscription: Some(Subscription {
                 label: "Sign in with Google (CodeAssist)",
@@ -218,6 +226,7 @@ pub fn lookup(pt: ProviderType) -> Option<ManifestProvider> {
                 extra_authorize_params: &[],
                 requires_pkce: false,
                 is_anthropic_paste_code: false,
+                device_response_camelcase: false,
             }),
             subscription: Some(Subscription {
                 label: "Kiro subscription",
@@ -248,6 +257,7 @@ pub fn lookup(pt: ProviderType) -> Option<ManifestProvider> {
                 extra_authorize_params: &[],
                 requires_pkce: true,
                 is_anthropic_paste_code: false,
+                device_response_camelcase: false,
             }),
             subscription: Some(Subscription {
                 label: "ChatGPT Plus/Pro/Team",
@@ -277,6 +287,7 @@ pub fn lookup(pt: ProviderType) -> Option<ManifestProvider> {
                 extra_authorize_params: &[],
                 requires_pkce: true,
                 is_anthropic_paste_code: false,
+                device_response_camelcase: false,
             }),
             subscription: Some(Subscription {
                 label: "ChatGPT Plus/Pro/Team",
@@ -360,6 +371,7 @@ pub fn lookup(pt: ProviderType) -> Option<ManifestProvider> {
                 extra_authorize_params: &[],
                 requires_pkce: true,
                 is_anthropic_paste_code: false,
+                device_response_camelcase: false,
             }),
             subscription: Some(Subscription {
                 label: "Grok subscription",
@@ -421,15 +433,17 @@ pub fn lookup(pt: ProviderType) -> Option<ManifestProvider> {
             requires_key: true,
             local_only: false,
             // Minimax uses a custom user-code grant
-            // (urn:ietf:params:oauth:grant-type:user_code) — the user-code
-            // endpoint returns a verification URL where the user enters a
-            // one-time code, then the token endpoint exchanges the grant
-            // for an access + refresh token. Resource URL can be
-            // regional (`/anthropic` vs the default path).
+            // (urn:ietf:params:oauth:grant-type:user_code) — the device
+            // /oauth/code endpoint returns `deviceCode`, `userCode`,
+            // `verificationUriComplete` (camelCase!) and a
+            // `verificationUriComplete` that redirects to
+            // platform.minimax.io/oauth-authorize. Response fields are
+            // camelCase unlike the standard snaked GitHub/Kiro device
+            // flows, flagged by `device_response_camelcase`.
             oauth: Some(ManifestOAuth {
                 authorize_url: "",
-                token_url: "https://api.minimax.chat/oauth/token",
-                device_code_url: "https://api.minimax.chat/oauth/device/code",
+                token_url: "https://api.minimax.io/oauth/token",
+                device_code_url: "https://api.minimax.io/oauth/code",
                 paste_code_redirect_url: "",
                 client_id: "78257093-7e40-4613-99e0-527b14b39113",
                 client_secret: "",
@@ -438,6 +452,7 @@ pub fn lookup(pt: ProviderType) -> Option<ManifestProvider> {
                 extra_authorize_params: &[],
                 requires_pkce: false,
                 is_anthropic_paste_code: false,
+                device_response_camelcase: true,
             }),
             subscription: Some(Subscription {
                 label: "MiniMax Coding Plan",
@@ -531,6 +546,7 @@ pub fn lookup(pt: ProviderType) -> Option<ManifestProvider> {
                 extra_authorize_params: &[],
                 requires_pkce: false,
                 is_anthropic_paste_code: false,
+                device_response_camelcase: false,
             }),
             subscription: Some(Subscription {
                 label: "GitHub Copilot subscription",
