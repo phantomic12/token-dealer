@@ -4,3 +4,7 @@ Cargo.lock.bak
 .env
 *.local.toml
 .DS_Store
+data/
+smoke-conf.toml
+token-dealer.toml
+token-dealer.smoke.toml

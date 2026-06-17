@@ -264,9 +264,12 @@ pub async fn oauth_callback(
         .complete_popup_oauth(&provider_id, &code, &oauth_state, &redirect_uri)
         .await
     {
-        Ok(_) => axum::response::Redirect::to("/ui/providers?flash=oauth_ok").into_response(),
+        Ok(_) => axum::response::Redirect::to(&format!(
+            "/ui/oauth/done?provider={provider_id}&status=ok"
+        ))
+        .into_response(),
         Err(e) => axum::response::Redirect::to(&format!(
-            "/ui/providers?flash=oauth_err&msg={}",
+            "/ui/oauth/done?provider={provider_id}&status=err&msg={}",
             urlencoding_simple(&e.to_string())
         ))
         .into_response(),
@@ -285,6 +288,41 @@ pub async fn start_device_oauth(
         Err(e) => (
             StatusCode::BAD_REQUEST,
             Json(json!({"error": format!("start_device failed: {e}")})),
+        )
+            .into_response(),
+    }
+}
+
+/// Anthropic paste-code flow. POST /admin/oauth/:provider_id/paste
+/// with `{"code": "<authorization_code>#<state>"}`. Stores the code as
+/// the refresh_token; the refresh path will exchange it for a real
+/// access token on first request.
+pub async fn paste_anthropic_code(
+    State(state): State<AppState>,
+    axum::extract::Path(provider_id): axum::extract::Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    let code = body
+        .get("code")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    if code.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "code field is required"})),
+        )
+            .into_response();
+    }
+    match state.oauth.paste_anthropic_code(&provider_id, &code).await {
+        Ok(_) => (
+            StatusCode::OK,
+            Json(json!({"status": "ok", "provider": provider_id})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": format!("{e}")})),
         )
             .into_response(),
     }

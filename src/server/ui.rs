@@ -585,6 +585,100 @@ pub async fn playground_send(
     }
 }
 
+/// Small HTML page that the OAuth callback redirects to. Runs
+/// inside the popup window; posts a `oauth_complete` message to
+/// the opener (the wizard step 2 page) and closes itself. Includes
+/// a 2-second fallback redirect in case `window.opener` is null
+/// (e.g. user opened the callback URL directly in a new tab).
+pub async fn oauth_done_page(
+    State(_state): State<AppState>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let provider = html_escape(&params.get("provider").cloned().unwrap_or_default());
+    let status = html_escape(&params.get("status").cloned().unwrap_or_else(|| "ok".into()));
+    let msg = html_escape(&params.get("msg").cloned().unwrap_or_default());
+    let title = if status == "ok" {
+        format!("Connected {provider}")
+    } else {
+        format!("Connection failed")
+    };
+    let body = format!(
+        r##"<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>{title} · token-dealer</title>
+  <link rel="stylesheet" href="/ui/style.css" />
+  <style>
+    body {{ display:flex; align-items:center; justify-content:center; min-height:100vh; margin:0; }}
+    .card {{ background:var(--bg-elev); border:1px solid var(--border); border-radius:8px; padding:32px 40px; max-width:420px; text-align:center; }}
+    .status-ok {{ color:var(--green); font-size:48px; }}
+    .status-err {{ color:var(--red); font-size:48px; }}
+    h1 {{ margin:8px 0 4px; }}
+    p {{ color:var(--text-dim); margin:8px 0; }}
+    .err-detail {{ color:var(--red); font-family:var(--mono); font-size:12px; margin-top:16px; word-break:break-word; }}
+    a {{ color:var(--accent); }}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="{status_class}">{status_icon}</div>
+    <h1>{title}</h1>
+    <p>{body_msg}</p>
+    {err_detail}
+  </div>
+  <script>
+    (function() {{
+      const params = new URLSearchParams(window.location.search);
+      const provider = params.get('provider') || '';
+      const status = params.get('status') || 'ok';
+      const msg = params.get('msg') || '';
+      try {{
+        if (window.opener && !window.opener.closed) {{
+          window.opener.postMessage(
+            {{ type: 'oauth_complete', provider, status, msg }},
+            window.location.origin
+          );
+          setTimeout(() => {{ try {{ window.close(); }} catch(_) {{}} }}, 250);
+        }} else {{
+          // No opener (user opened the callback URL directly) —
+          // redirect to the providers page after a short pause.
+          setTimeout(() => {{
+            const qs = new URLSearchParams({{
+              flash: status === 'ok' ? 'oauth_ok' : 'oauth_err',
+              provider,
+            }});
+            if (msg) qs.set('msg', msg);
+            window.location.href = '/ui/providers?' + qs.toString();
+          }}, 1500);
+        }}
+      }} catch(e) {{
+        // postMessage blocked — fall through to redirect.
+        setTimeout(() => {{
+          const qs = new URLSearchParams({{ flash: status === 'ok' ? 'oauth_ok' : 'oauth_err', provider }});
+          window.location.href = '/ui/providers?' + qs.toString();
+        }}, 1500);
+      }}
+    }})();
+  </script>
+</body>
+</html>"##,
+        status_class = if status == "ok" { "status-ok" } else { "status-err" },
+        status_icon = if status == "ok" { "✓" } else { "✕" },
+        body_msg = if status == "ok" {
+            format!("Refresh token stored. You can close this window.")
+        } else {
+            format!("Could not complete the {provider} sign-in.")
+        },
+        err_detail = if status != "ok" && !msg.is_empty() {
+            format!(r##"<div class="err-detail">{msg}</div>"##)
+        } else {
+            String::new()
+        },
+    );
+    axum::response::Html(body).into_response()
+}
+
 pub async fn providers_page(State(state): State<AppState>) -> Response {
     let snap = state.config.snapshot().await;
     let body = format!(
@@ -839,10 +933,13 @@ fn render_wizard_step2(provider_type: &str) -> String {
     let subscription = info.and_then(|m| m.subscription);
     let oauth = info.and_then(|m| m.oauth);
     let is_popup_oauth = oauth
-        .map(|o| !o.authorize_url.is_empty())
+        .map(|o| !o.authorize_url.is_empty() && !o.is_anthropic_paste_code)
         .unwrap_or(false);
     let is_device_code = oauth
         .map(|o| !o.device_code_url.is_empty())
+        .unwrap_or(false);
+    let is_anthropic_paste = oauth
+        .map(|o| o.is_anthropic_paste_code)
         .unwrap_or(false);
 
     let id_suggestion = if provider_type == "generic" {
@@ -889,17 +986,64 @@ fn render_wizard_step2(provider_type: &str) -> String {
     let oauth_connect_html = if is_popup_oauth {
         format!(
             r##"<div class="oauth-connect" id="oauth-{t}-block">
-              <button type="button" class="secondary"
-                      hx-post="/admin/oauth/{t}/start"
-                      hx-vals='{{"redirect_uri": "{base}/admin/oauth/{t}/callback"}}'
-                      hx-target="#oauth-{t}-block"
-                      hx-swap="outerHTML">
+              <button type="button" class="secondary" id="oauth-{t}-btn">
                 Connect with {t}
               </button>
-              <span class="muted">Opens the auth page in a new tab. After you sign in, the refresh token is stored automatically.</span>
-            </div>"##,
+              <span class="muted">Opens the {t} sign-in page in a popup window. Token stored automatically after consent.</span>
+            </div>
+            <script>
+            (function() {{
+              const btn = document.getElementById('oauth-{t}-btn');
+              if (!btn) return;
+              btn.addEventListener('click', () => {{
+                btn.disabled = true;
+                btn.textContent = 'Opening {t}…';
+                const redirect_uri = window.location.origin + '/admin/oauth/{t}/callback';
+                fetch('/admin/oauth/{t}/start', {{
+                  method: 'POST',
+                  headers: {{ 'content-type': 'application/json' }},
+                  body: JSON.stringify({{ redirect_uri }}),
+                }})
+                .then(r => r.json().then(j => ({{ ok: r.ok, body: j }})))
+                .then(({{ ok, body }}) => {{
+                  if (!ok || !body.authorize_url) {{
+                    btn.disabled = false;
+                    btn.textContent = 'Connect with {t}';
+                    alert('OAuth start failed: ' + (body.error || 'unknown'));
+                    return;
+                  }}
+                  const popup = window.open(
+                    body.authorize_url,
+                    'oauth-{t}',
+                    'width=600,height=720,menubar=no,toolbar=no'
+                  );
+                  if (!popup) {{
+                    btn.disabled = false;
+                    btn.textContent = 'Connect with {t}';
+                    alert('Popup blocked — please allow popups for this origin, then click again.');
+                    return;
+                  }}
+                  // Listen for the success postMessage from the popup.
+                  window.addEventListener('message', (e) => {{
+                    if (e.data && e.data.type === 'oauth_complete' && e.data.provider === '{t}') {{
+                      window.location.href = '/ui/providers?flash=' +
+                        (e.data.status === 'ok' ? 'oauth_ok' : 'oauth_err') +
+                        '&provider={t}';
+                    }}
+                  }});
+                  // Detect popup closed without completing.
+                  const t = setInterval(() => {{
+                    if (popup.closed) {{
+                      clearInterval(t);
+                      btn.disabled = false;
+                      btn.textContent = 'Connect with {t}';
+                    }}
+                  }}, 800);
+                }});
+              }});
+            }})();
+            </script>"##,
             t = provider_type,
-            base = "{{BASE_URL}}", // substituted by JS via the global TokenDealer object
         )
     } else if is_device_code {
         format!(
@@ -913,6 +1057,66 @@ fn render_wizard_step2(provider_type: &str) -> String {
               <span class="muted">Returns a code you enter at the provider's activation page. Auto-connects once approved.</span>
             </div>"##,
             t = provider_type,
+        )
+    } else if is_anthropic_paste {
+        // Anthropic's claude.ai/oauth/authorize → console.anthropic.com/oauth/code/callback
+        // displays a `<code>#<state>` string. User pastes it back; we split
+        // on `#` and store the code as the refresh_token. The `claude setup-token`
+        // CLI does the same thing programmatically.
+        let paste_redirect = oauth
+            .and_then(|o| {
+                if o.paste_code_redirect_url.is_empty() {
+                    None
+                } else {
+                    Some(o.paste_code_redirect_url)
+                }
+            })
+            .unwrap_or("https://console.anthropic.com/oauth/code/callback");
+        format!(
+            r##"<div class="oauth-connect" id="oauth-{t}-block">
+              <a class="secondary" href="{redirect}" target="_blank" rel="noopener" id="oauth-{t}-open">Open Claude sign-in</a>
+              <span class="muted">Sign in, then copy the <code>&lt;code&gt;#&lt;state&gt;</code> string from the redirect page.</span>
+              <textarea id="oauth-{t}-code" placeholder="paste the code here (e.g. sk-ant-oat01-...#a1b2c3)" rows="3" style="width:100%;margin-top:8px;font-family:var(--mono);font-size:12px;"></textarea>
+              <button type="button" class="secondary" id="oauth-{t}-submit">Submit code</button>
+            </div>
+            <script>
+            (function() {{
+              const btn = document.getElementById('oauth-{t}-submit');
+              if (!btn) return;
+              btn.addEventListener('click', async () => {{
+                btn.disabled = true;
+                btn.textContent = 'Submitting…';
+                const code = (document.getElementById('oauth-{t}-code').value || '').trim();
+                if (!code) {{
+                  btn.disabled = false;
+                  btn.textContent = 'Submit code';
+                  alert('Paste the code from console.anthropic.com first.');
+                  return;
+                }}
+                try {{
+                  const r = await fetch('/admin/oauth/{t}/paste', {{
+                    method: 'POST',
+                    headers: {{ 'content-type': 'application/json' }},
+                    body: JSON.stringify({{ code }}),
+                  }});
+                  if (!r.ok) {{
+                    const j = await r.json().catch(() => ({{}}));
+                    btn.disabled = false;
+                    btn.textContent = 'Submit code';
+                    alert('Submit failed: ' + (j.error || r.statusText));
+                    return;
+                  }}
+                  window.location.href = '/ui/providers?flash=oauth_ok&provider={t}';
+                }} catch (e) {{
+                  btn.disabled = false;
+                  btn.textContent = 'Submit code';
+                  alert('Network: ' + e);
+                }}
+              }});
+            }})();
+            </script>"##,
+            t = provider_type,
+            redirect = paste_redirect,
         )
     } else if oauth.is_some() {
         // OAuth with refresh_token-paste only (no popup, no device).

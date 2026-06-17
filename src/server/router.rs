@@ -6,16 +6,16 @@ use super::handlers::{chat_completions, health, healthz, list_models, public_sta
 use super::middleware::request_id_layer;
 use super::multimodal::{audio_speech, image_generations, video_generations};
 use super::ui::{
-    dashboard, index, logs_page, playground_page, playground_send, providers_new_step1,
-    providers_new_step2, providers_page, providers_partial, rules_page, tiers_page,
-    ui_remove_provider, ui_style,
+    dashboard, index, logs_page, oauth_done_page, playground_page, playground_send,
+    providers_new_step1, providers_new_step2, providers_page, providers_partial, rules_page,
+    tiers_page, ui_remove_provider, ui_style,
 };
 use super::AppState;
 use super::admin::{
     add_provider, add_rule, delete_key, delete_rule, list_pricing, list_provider_models,
-    list_provider_types, oauth_callback, poll_device_oauth, remove_provider, save_config,
-    set_key, set_oauth_refresh, start_device_oauth, start_oauth, sync_pricing_now,
-    test_provider, update_tier, validate_provider_type,
+    list_provider_types, oauth_callback, paste_anthropic_code, poll_device_oauth,
+    remove_provider, save_config, set_key, set_oauth_refresh, start_device_oauth, start_oauth,
+    sync_pricing_now, test_provider, update_tier, validate_provider_type,
 };
 use super::auth_endpoints;
 use super::ui_login as login_pages;
@@ -62,6 +62,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/admin/oauth/:provider_id/refresh", post(set_oauth_refresh))
         .route("/admin/oauth/:provider_id/start", post(start_oauth))
         .route("/admin/oauth/:provider_id/callback", get(oauth_callback))
+        .route("/admin/oauth/:provider_id/paste", post(paste_anthropic_code))
         .route("/admin/oauth/:provider_id/device/start", post(start_device_oauth))
         .route("/admin/oauth/device/poll", post(poll_device_oauth))
         .route("/admin/pricing", get(list_pricing))
@@ -73,6 +74,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/ui/providers", get(providers_page))
         .route("/ui/providers/new", get(providers_new_step1))
         .route("/ui/providers/new/config", get(providers_new_step2))
+        .route("/ui/oauth/done", get(oauth_done_page))
         .route("/ui/partials/providers", get(providers_partial))
         .route("/ui/tiers", get(tiers_page))
         .route("/ui/logs", get(logs_page))

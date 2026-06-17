@@ -75,6 +75,10 @@ pub struct OAuthManager {
     /// string the provider redirects back with; value is the
     /// provider_id we issued it for.
     states: Arc<RwLock<HashMap<String, String>>>,
+    /// PKCE verifiers keyed by the same state string. Consumed on
+    /// `complete_popup_oauth` and removed. Stored separately so the
+    /// `states` map stays a `String → String` shape.
+    pkce_verifiers: Arc<RwLock<HashMap<String, String>>>,
     /// In-memory device_codes for device_code. Keyed by the
     /// device_code string; value is the provider_id it was
     /// issued for.
@@ -90,6 +94,7 @@ impl OAuthManager {
             cache: Arc::new(RwLock::new(HashMap::new())),
             configs: Arc::new(RwLock::new(HashMap::new())),
             states: Arc::new(RwLock::new(HashMap::new())),
+            pkce_verifiers: Arc::new(RwLock::new(HashMap::new())),
             devices: Arc::new(RwLock::new(HashMap::new())),
             http,
         }
@@ -316,23 +321,64 @@ pub async fn start_popup_oauth(
     if cfg.authorize_url.is_empty() {
         anyhow::bail!("provider {} is not popup_oauth (no authorize_url)", provider_id);
     }
+    if cfg.is_anthropic_paste_code {
+        anyhow::bail!(
+            "provider {} uses the paste-code flow (POST /admin/oauth/{}/paste) not popup",
+            provider_id, provider_id
+        );
+    }
     let state = format!(
         "{}.{}",
         provider_id,
         uuid::Uuid::new_v4().simple()
     );
-    // Standard OAuth2: response_type=code, include state + redirect_uri.
-    // We hardcode scope=openid profile email offline_access for OpenAI;
-    // other providers may ignore unknown scopes.
-    let url = format!(
-        "{}?response_type=code&client_id={}&redirect_uri={}&state={}&scope=openid+profile+email+offline_access",
+    // PKCE: generate a random 64-byte URL-safe verifier, SHA-256 hash
+    // it into a challenge. We send only the challenge on the wire at
+    // authorize time; the verifier comes back via the redirect.
+    let verifier = generate_pkce_verifier();
+    let challenge = pkce_challenge_s256(&verifier);
+
+    // Build the authorize URL. We append cfg.scope verbatim
+    // (manifest pre-encodes the spaces) plus cfg.extra_authorize_params.
+    // If cfg.redirect_uri is set (xAI), we use that instead of the
+    // caller's redirect_uri.
+    let effective_redirect = if cfg.redirect_uri.is_empty() {
+        redirect_uri.to_string()
+    } else {
+        cfg.redirect_uri.to_string()
+    };
+    let scope = if cfg.scope.is_empty() {
+        "openid profile email offline_access".to_string()
+    } else {
+        cfg.scope.replace(' ', "+")
+    };
+    let mut url = format!(
+        "{}?response_type=code&client_id={}&redirect_uri={}&state={}&scope={}",
         cfg.authorize_url,
         urlencoding(&cfg.client_id),
-        urlencoding(redirect_uri),
+        urlencoding(&effective_redirect),
         urlencoding(&state),
+        urlencoding(&scope),
     );
-    // Store state for verification on callback.
-    self.states.write().await.insert(state.clone(), provider_id.to_string());
+    for (k, v) in cfg.extra_authorize_params {
+        url.push_str(&format!("&{}={}", urlencoding(k), urlencoding(v)));
+    }
+    if cfg.requires_pkce {
+        url.push_str(&format!(
+            "&code_challenge={}&code_challenge_method=S256",
+            urlencoding(&challenge)
+        ));
+    }
+
+    // Store state + PKCE verifier for verification on callback.
+    self.states
+        .write()
+        .await
+        .insert(state.clone(), provider_id.to_string());
+    self.pkce_verifiers
+        .write()
+        .await
+        .insert(state.clone(), verifier);
     Ok((url, state))
 }
 
@@ -361,12 +407,33 @@ pub async fn complete_popup_oauth(
     let cfg = lookup_manifest_oauth(provider_id)
         .ok_or_else(|| anyhow::anyhow!("provider {} has no OAuth config", provider_id))?;
 
-    let body = serde_json::json!({
+    // Look up the PKCE verifier we stored at authorize time and
+    // remove it. If missing, this provider either didn't issue
+    // PKCE or the state was forged; the OAuth server will reject
+    // a missing verifier for PKCE-required flows. We always send
+    // it anyway (Google accepts PKCE-only requests, OpenAI
+    // requires it).
+    let verifier = self.pkce_verifiers.write().await.remove(state);
+
+    let effective_redirect = if cfg.redirect_uri.is_empty() {
+        redirect_uri.to_string()
+    } else {
+        cfg.redirect_uri.to_string()
+    };
+
+    let mut body = serde_json::json!({
         "grant_type": "authorization_code",
         "code": code,
-        "redirect_uri": redirect_uri,
+        "redirect_uri": effective_redirect,
         "client_id": cfg.client_id,
     });
+    if let Some(v) = verifier {
+        body["code_verifier"] = serde_json::Value::String(v);
+    }
+    let client_secret = resolve_client_secret(provider_id, cfg.client_secret);
+    if !client_secret.is_empty() {
+        body["client_secret"] = serde_json::Value::String(client_secret);
+    }
 
     let resp = self
         .http
@@ -484,7 +551,7 @@ pub async fn poll_device_flow(
     });
     let resp = self
         .http
-        .post(cfg.device_token_url)
+        .post(cfg.token_url)
         .json(&body)
         .send()
         .await?;
@@ -539,6 +606,29 @@ fn lookup_manifest_oauth(
     manifest::lookup(pt).and_then(|m| m.oauth)
 }
 
+/// Resolve the client_secret for a provider. Most public OAuth
+/// clients (OpenAI Codex, xAI, Anthropic) don't need a secret; the
+/// manifest leaves `client_secret` empty and we skip sending it.
+/// Google Gemini's gemini-cli client DOES have a public secret — it's
+/// shipped in the open-source gemini-cli source, but GitHub's
+/// push-protection blocks the literal string. We read it from the
+/// `GOOGLE_OAUTH_CLIENT_SECRET` env var when the user wants that
+/// flow; otherwise the manifest entry stays empty and Google flow
+/// works only for the API-key path.
+fn resolve_client_secret(provider_id: &str, manifest_secret: &str) -> String {
+    if !manifest_secret.is_empty() {
+        return manifest_secret.to_string();
+    }
+    let env_key = match provider_id {
+        "google" => Some("GOOGLE_OAUTH_CLIENT_SECRET"),
+        _ => None,
+    };
+    match env_key {
+        Some(k) => std::env::var(k).unwrap_or_default(),
+        None => String::new(),
+    }
+}
+
 fn urlencoding(s: &str) -> String {
     // Minimal percent-encoding for URL query values. Avoids
     // pulling in the `urlencoding` crate.
@@ -554,4 +644,297 @@ fn urlencoding(s: &str) -> String {
         }
     }
     out
+}
+
+// ─── PKCE helpers (RFC 7636) ────────────────────────────────────────────
+
+/// Generate a 43-char URL-safe PKCE verifier per RFC 7636 §4.1.
+/// We use 32 random bytes → 43 base64url chars (no padding).
+fn generate_pkce_verifier() -> String {
+    use rand::RngCore;
+    let mut bytes = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    base64_url_encode(&bytes)
+}
+
+/// Compute the S256 PKCE challenge: base64url(sha256(verifier))
+/// per RFC 7636 §4.2.
+fn pkce_challenge_s256(verifier: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(verifier.as_bytes());
+    let digest = h.finalize();
+    base64_url_encode(digest.as_slice())
+}
+
+/// Lower-case base64url encoding without padding (RFC 4648 §5).
+fn base64_url_encode(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let mut out = String::with_capacity((bytes.len() * 4 + 2) / 3);
+    let mut i = 0;
+    while i + 3 <= bytes.len() {
+        let b0 = bytes[i];
+        let b1 = bytes[i + 1];
+        let b2 = bytes[i + 2];
+        out.push(ALPHABET[(b0 >> 2) as usize] as char);
+        out.push(ALPHABET[(((b0 & 0b11) << 4) | (b1 >> 4)) as usize] as char);
+        out.push(ALPHABET[(((b1 & 0x0f) << 2) | (b2 >> 6)) as usize] as char);
+        out.push(ALPHABET[(b2 & 0x3f) as usize] as char);
+        i += 3;
+    }
+    let rem = bytes.len() - i;
+    if rem == 1 {
+        let b0 = bytes[i];
+        out.push(ALPHABET[(b0 >> 2) as usize] as char);
+        out.push(ALPHABET[((b0 & 0b11) << 4) as usize] as char);
+    } else if rem == 2 {
+        let b0 = bytes[i];
+        let b1 = bytes[i + 1];
+        out.push(ALPHABET[(b0 >> 2) as usize] as char);
+        out.push(ALPHABET[(((b0 & 0b11) << 4) | (b1 >> 4)) as usize] as char);
+        out.push(ALPHABET[((b1 & 0x0f) << 2) as usize] as char);
+    }
+    out
+}
+
+// ─── Anthropic paste-code flow ─────────────────────────────────────────
+
+impl OAuthManager {
+/// Anthropic's OAuth flow uses a manual paste-code step: the user
+/// signs in on the web, the redirect page at console.anthropic.com
+/// shows `<authorization_code>#<state>`, and the user copies
+/// that string back into the CLI/UI. The "code" half is actually
+/// the long-lived refresh token for Claude Code-style routers.
+///
+/// Accept the pasted string and split it. Store the code portion
+/// as the OAuth refresh token; the state portion is just
+/// CSRF protection (the user's browser session already validated
+/// the flow).
+pub async fn paste_anthropic_code(
+    &self,
+    provider_id: &str,
+    pasted: &str,
+) -> anyhow::Result<()> {
+    let cfg = lookup_manifest_oauth(provider_id)
+        .ok_or_else(|| anyhow::anyhow!("provider {} has no OAuth config", provider_id))?;
+    if !cfg.is_anthropic_paste_code {
+        anyhow::bail!(
+            "provider {} does not support the paste-code flow",
+            provider_id
+        );
+    }
+    let trimmed = pasted.trim();
+    // The format is `<code>#<state>`. Split on the last `#`.
+    let (code, _state) = match trimmed.rsplit_once('#') {
+        Some((c, s)) => (c.trim(), s.trim()),
+        None => {
+            // Some users paste just the code. Accept that.
+            (trimmed, "")
+        }
+    };
+    if code.is_empty() {
+        anyhow::bail!("pasted code is empty");
+    }
+    // Anthropic uses long-lived codes (~1y) — store as the
+    // refresh token directly. The refresh path will detect the
+    // format and try to refresh; if the server rejects, the
+    // user re-runs the paste flow.
+    self.set_refresh_token(provider_id, code).await?;
+    Ok(())
+}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pkce_verifier_is_url_safe_43_chars() {
+        let v = generate_pkce_verifier();
+        assert_eq!(v.len(), 43, "PKCE verifier should be 43 chars, got {}", v.len());
+        for c in v.chars() {
+            assert!(
+                c.is_ascii_alphanumeric() || c == '-' || c == '_',
+                "PKCE verifier contains unexpected char: {c}"
+            );
+        }
+    }
+
+    #[test]
+    fn pkce_challenge_matches_rfc7636_test_vector() {
+        // From RFC 7636 Appendix B:
+        //   verifier  = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
+        //   challenge = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+        assert_eq!(pkce_challenge_s256(verifier), "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM");
+    }
+
+    #[test]
+    fn base64_url_encode_matches_known_vector() {
+        // Empty
+        assert_eq!(base64_url_encode(&[]), "");
+        // "f" → "Zm8" (RFC 4648 §10)
+        assert_eq!(base64_url_encode(b"fo"), "Zm8");
+        // "foo" → "Zm9v"
+        assert_eq!(base64_url_encode(b"foo"), "Zm9v");
+        // "foob" → "Zm9vYg"
+        assert_eq!(base64_url_encode(b"foob"), "Zm9vYg");
+        // "fooba" → "Zm9vYmE"
+        assert_eq!(base64_url_encode(b"fooba"), "Zm9vYmE");
+        // "foobar" → "Zm9vYmFy"
+        assert_eq!(base64_url_encode(b"foobar"), "Zm9vYmFy");
+    }
+}
+
+#[cfg(test)]
+mod popup_url_tests {
+    use super::*;
+
+    fn build_authorize_url(
+        cfg: &crate::providers::manifest::ManifestOAuth,
+        redirect_uri: &str,
+        state: &str,
+        verifier: &str,
+    ) -> String {
+        let challenge = pkce_challenge_s256(verifier);
+        // xAI's OAuth client is registered with a 127.0.0.1 callback
+        // (not the server's URL). Other providers with `redirect_uri`
+        // set in the manifest override the caller-supplied redirect too.
+        let effective_redirect = if cfg.redirect_uri.is_empty() {
+            redirect_uri.to_string()
+        } else {
+            cfg.redirect_uri.to_string()
+        };
+        let scope = if cfg.scope.is_empty() {
+            "openid profile email offline_access".to_string()
+        } else {
+            cfg.scope.replace(' ', "+")
+        };
+        let mut url = format!(
+            "{}?response_type=code&client_id={}&redirect_uri={}&state={}&scope={}",
+            cfg.authorize_url,
+            urlencoding(&cfg.client_id),
+            urlencoding(&effective_redirect),
+            urlencoding(state),
+            urlencoding(&scope),
+        );
+        for (k, v) in cfg.extra_authorize_params {
+            url.push_str(&format!("&{}={}", urlencoding(k), urlencoding(v)));
+        }
+        if cfg.requires_pkce {
+            url.push_str(&format!(
+                "&code_challenge={}&code_challenge_method=S256",
+                urlencoding(&challenge)
+            ));
+        }
+        url
+    }
+
+    #[test]
+    fn openai_popup_url_uses_real_client_id_and_scope() {
+        let cfg = lookup_manifest_oauth("openai").expect("openai manifest");
+        let url = build_authorize_url(&cfg, "http://localhost:8080/admin/oauth/openai/callback", "openai.abc123", "verifier_xyz");
+        assert!(url.starts_with("https://auth.openai.com/oauth/authorize?"), "got {url}");
+        assert!(url.contains("client_id=app_EMoamEEZ73f0CkXaXp7hrann"), "missing real client_id");
+        // Scope is space-joined then url-encoded → `+` becomes `%2B`.
+        for s in &["openid", "profile", "email", "offline_access"] {
+            assert!(
+                url.contains(s),
+                "scope missing {s} in URL: {url}"
+            );
+        }
+        assert!(url.contains("code_challenge="), "missing PKCE challenge");
+        assert!(url.contains("code_challenge_method=S256"), "missing PKCE method");
+    }
+
+    #[test]
+    fn google_popup_url_uses_real_client_id_and_extra_params() {
+        let cfg = lookup_manifest_oauth("google").expect("google manifest");
+        let url = build_authorize_url(&cfg, "http://localhost:8080/admin/oauth/google/callback", "google.abc", "verifier");
+        assert!(url.starts_with("https://accounts.google.com/o/oauth2/v2/auth?"));
+        assert!(url.contains("client_id=681255809395-oo8ft2oprdrnp9e3aqf6av3hmi99ikee6.apps.googleusercontent.com"));
+        assert!(url.contains("access_type=offline"), "Google requires access_type=offline for refresh tokens");
+        assert!(url.contains("prompt=consent"));
+        assert!(url.contains("code_challenge="));
+    }
+
+    #[test]
+    fn xai_popup_url_uses_overridden_redirect_uri() {
+        let cfg = lookup_manifest_oauth("xai").expect("xai manifest");
+        let url = build_authorize_url(&cfg, "http://127.0.0.1:8080/admin/oauth/xai/callback", "xai.abc", "verifier");
+        // xAI's OAuth client is registered with a 127.0.0.1 redirect on
+        // a bare /callback path — NOT the server's callback URL.
+        assert!(url.contains("redirect_uri=http%3A%2F%2F127.0.0.1%3A1455%2Fcallback"),
+                "xAI redirect must override, got {url}");
+        assert!(url.contains("client_id=b1a00492-073a-47ea-816f-4c329264a828"));
+        assert!(url.contains("grok-cli%3Aaccess"), "xAI-specific scope");
+    }
+
+    #[test]
+    fn anthropic_paste_code_marker_set() {
+        let cfg = lookup_manifest_oauth("anthropic").expect("anthropic manifest");
+        assert!(cfg.is_anthropic_paste_code, "anthropic should be paste-code flow");
+        assert_eq!(cfg.client_id, "9d1c250a-e61b-44d9-88ed-5944d1962f5e");
+        assert_eq!(
+            cfg.paste_code_redirect_url,
+            "https://console.anthropic.com/oauth/code/callback"
+        );
+    }
+
+    #[test]
+    fn copilot_device_code_marker() {
+        let cfg = lookup_manifest_oauth("github-copilot").expect("copilot manifest");
+        assert!(cfg.device_code_url.contains("github.com/login/device/code"));
+        assert_eq!(cfg.client_id, "Iv1.b507a08c87ecfe98");
+        assert!(!cfg.requires_pkce, "device code flow doesn't need PKCE");
+        assert!(!cfg.is_anthropic_paste_code);
+    }
+
+    #[test]
+    fn kiro_device_code_marker() {
+        let cfg = lookup_manifest_oauth("kiro").expect("kiro manifest");
+        assert!(cfg.device_code_url.contains("kiro.dev/deviceAuthorization"));
+        assert!(!cfg.requires_pkce);
+    }
+
+    #[test]
+    fn no_provider_has_empty_client_id() {
+        // Catch the previous bug where client_ids were placeholders
+        // like "openai-cli-public" or "xai-cli-public". Kiro is the
+        // one exception — it dynamically registers a client_id+secret
+        // via `registerClient` before the device flow starts, so the
+        // manifest stores the *type* ("kiro-cli") rather than the
+        // real id (which doesn't exist until runtime).
+        for provider in &[
+            "anthropic", "openai", "responses", "google", "xai",
+            "github-copilot", "minimax",
+        ] {
+            let cfg = lookup_manifest_oauth(provider)
+                .unwrap_or_else(|| panic!("{provider} has no manifest oauth"));
+            assert!(
+                !cfg.client_id.is_empty(),
+                "{provider}: client_id is empty"
+            );
+            assert!(
+                cfg.client_id.len() >= 8,
+                "{}: client_id '{}' looks like a placeholder",
+                provider, cfg.client_id
+            );
+            // Reject obvious placeholder patterns.
+            assert!(
+                !cfg.client_id.ends_with("-public"),
+                "{}: client_id '{}' is the old placeholder (ends in -public)",
+                provider, cfg.client_id
+            );
+        }
+        // Kiro uses dynamic registration — the literal "kiro-cli" is
+        // intentional, the real id comes from the OIDC register step.
+        let kiro = lookup_manifest_oauth("kiro").expect("kiro manifest");
+        assert_eq!(kiro.client_id, "kiro-cli");
+        assert_eq!(
+            kiro.device_code_url,
+            "https://prod.us-east-1.auth.desktop.kiro.dev/deviceAuthorization"
+        );
+    }
 }

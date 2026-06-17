@@ -13,21 +13,50 @@ use super::super::config::types::ProviderType;
 /// system exchanges it for an access token via `token_url` and
 /// uses the access token in API calls. The user-facing config
 /// still looks like a single "key" field; this is internal.
+///
+/// Defaults sourced from `mnfst/manifest/packages/backend/src/routing/oauth/`
+/// on `main` — those defaults match the public client_ids the
+/// providers ship in their official CLI tools (gemini-cli, openai
+/// codex, kiro-cli, etc.), so the user can connect without
+/// registering their own OAuth app.
 #[derive(Debug, Clone, Copy)]
 pub struct ManifestOAuth {
-    pub token_url: &'static str,
-    pub client_id: &'static str,
     /// Authorization endpoint for popup_oauth providers. Empty if
     /// not applicable (refresh_token-paste only, or device_code).
     pub authorize_url: &'static str,
-    /// Token URL for device_code providers (returns the access +
-    /// refresh tokens after the user authorizes the device). The
-    /// main `token_url` above is used for refreshing.
-    pub device_token_url: &'static str,
+    /// Token endpoint used for authorization_code exchange AND
+    /// refresh_token. Same URL for both grants per OAuth 2.0.
+    pub token_url: &'static str,
     /// Device-code endpoint for device_code providers. POST
     /// returns `{device_code, user_code, verification_uri, ...}`.
     /// Empty if not applicable.
     pub device_code_url: &'static str,
+    /// For Anthropic-style flows: the page that shows the
+    /// authorization code the user copies back. Empty otherwise.
+    pub paste_code_redirect_url: &'static str,
+    /// OAuth client_id (public, embedded in the authorize URL).
+    pub client_id: &'static str,
+    /// OAuth client_secret. Only Google Gemini's CLI client ships
+    /// with a non-empty one; everything else is public-client PKCE.
+    pub client_secret: &'static str,
+    /// Scope string joined with spaces in the authorize URL.
+    pub scope: &'static str,
+    /// Override redirect_uri. Default is `${oauth_redirect_uri}/admin/oauth/{provider}/callback`
+    /// from `token-dealer.toml`. xAI uses a special 127.0.0.1 path.
+    pub redirect_uri: &'static str,
+    /// Extra authorize-URL params (Google needs
+    /// `access_type=offline&prompt=consent` for refresh tokens).
+    /// Each pair is `key=value` appended as-is.
+    pub extra_authorize_params: &'static [(&'static str, &'static str)],
+    /// `true` for popup flows (requires PKCE), `false` for
+    /// device_code / refresh_token-paste.
+    pub requires_pkce: bool,
+    /// Anthropic's `claude setup-token` flow: the user signs in
+    /// on the web, the redirect page shows a code like
+    /// `1\\xxxx#yyyy`, they paste it back. No popup, no device
+    /// code, no refresh — the "code" is actually the access
+    /// token + state tuple.
+    pub is_anthropic_paste_code: bool,
 }
 
 /// Subscription metadata for token-mode providers. These are not
@@ -107,7 +136,24 @@ pub fn lookup(pt: ProviderType) -> Option<ManifestProvider> {
             path: "/v1/messages",
             requires_key: true,
             local_only: false,
-            oauth: None,
+            // Anthropic uses the `claude setup-token` flow: PKCE authorize →
+            // console.anthropic.com displays `code#state` → user pastes
+            // back. The token URL exchanges code → access+refresh tokens
+            // compatible with Claude Code-style routers.
+            oauth: Some(ManifestOAuth {
+                authorize_url: "https://claude.ai/oauth/authorize",
+                token_url: "https://api.anthropic.com/v1/oauth/token",
+                device_code_url: "",
+                paste_code_redirect_url:
+                    "https://console.anthropic.com/oauth/code/callback",
+                client_id: "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
+                client_secret: "",
+                scope: "org:create_api_key user:profile user:inference",
+                redirect_uri: "",
+                extra_authorize_params: &[],
+                requires_pkce: true,
+                is_anthropic_paste_code: true,
+            }),
             subscription: Some(Subscription {
                 label: "Claude Max / Pro subscription",
                 token_prefix: "sk-ant-oat",
@@ -119,12 +165,26 @@ pub fn lookup(pt: ProviderType) -> Option<ManifestProvider> {
             path: "", // set per-model in the adapter
             requires_key: true,
             local_only: false,
+            // Google's `gemini-cli` Desktop OAuth client (public client_id).
+            // The matching public client_secret lives in `gemini-cli` and
+            // is loaded from the `GOOGLE_OAUTH_CLIENT_SECRET` env var at
+            // startup (or stays empty for API-key-only setups).
+            // Requires access_type=offline + prompt=consent or the second
+            // sign-in returns no refresh_token.
             oauth: Some(ManifestOAuth {
-                token_url: "https://oauth2.googleapis.com/token",
-                client_id: "681255809395-oo8ft2oprdrnp9e3aqf6av3hmi99ikee6.apps.googleusercontent.com",
                 authorize_url: "https://accounts.google.com/o/oauth2/v2/auth",
+                token_url: "https://oauth2.googleapis.com/token",
                 device_code_url: "",
-                device_token_url: "",
+                paste_code_redirect_url: "",
+                client_id:
+                    "681255809395-oo8ft2oprdrnp9e3aqf6av3hmi99ikee6.apps.googleusercontent.com",
+                client_secret: "", // ← set via GOOGLE_OAUTH_CLIENT_SECRET env
+                scope: "https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile openid",
+                redirect_uri: "",
+                extra_authorize_params: &[("access_type", "offline"),
+                    ("prompt", "consent"), ("include_granted_scopes", "true")],
+                requires_pkce: true,
+                is_anthropic_paste_code: false,
             }),
             subscription: Some(Subscription {
                 label: "Sign in with Google (CodeAssist)",
@@ -137,12 +197,27 @@ pub fn lookup(pt: ProviderType) -> Option<ManifestProvider> {
             path: "/",
             requires_key: true,
             local_only: false,
+            // Kiro uses an OIDC device-code flow against the AWS IAM Identity
+            // Center endpoint, with a register-client step that issues a
+            // dynamic client_id+secret. The grant type for both
+            // authorize-poll and token-exchange is
+            // `urn:ietf:params:oauth:grant-type:device_code`.
             oauth: Some(ManifestOAuth {
-                token_url: "https://prod.us-east-1.auth.desktop.kiro.dev/refreshToken",
-                client_id: "kiro-cli",
                 authorize_url: "",
-                device_code_url: "https://prod.us-east-1.auth.desktop.kiro.dev/deviceCode",
-                device_token_url: "https://prod.us-east-1.auth.desktop.kiro.dev/deviceToken",
+                token_url:
+                    "https://prod.us-east-1.auth.desktop.kiro.dev/oauth/token",
+                device_code_url:
+                    "https://prod.us-east-1.auth.desktop.kiro.dev/deviceAuthorization",
+                paste_code_redirect_url: "",
+                // Kiro registers dynamically — we override the
+                // device-flow start with a register-client POST.
+                client_id: "kiro-cli",
+                client_secret: "",
+                scope: "codewhisperer:completions codewhisperer:conversations",
+                redirect_uri: "",
+                extra_authorize_params: &[],
+                requires_pkce: false,
+                is_anthropic_paste_code: false,
             }),
             subscription: Some(Subscription {
                 label: "Kiro subscription",
@@ -155,12 +230,24 @@ pub fn lookup(pt: ProviderType) -> Option<ManifestProvider> {
             path: "/v1/responses",
             requires_key: true,
             local_only: false,
+            // OpenAI Codex uses the SAME OAuth client as ChatGPT (the
+            // `app_EMoamEEZ73f0CkXaXp7hrann` Desktop client, public).
+            // After auth, the proxy routes to /backend-api/codex with the
+            // same refresh_token — handled by the openai-codex-session
+            // unwrap. This config covers the authorize + token exchange
+            // only; the model dispatch lives in providers/adapters/openai.rs.
             oauth: Some(ManifestOAuth {
-                token_url: "https://auth.openai.com/oauth/token",
-                client_id: "app_DoG7JaCkAU8T6mongo4zR1vM",
                 authorize_url: "https://auth.openai.com/oauth/authorize",
+                token_url: "https://auth.openai.com/oauth/token",
                 device_code_url: "",
-                device_token_url: "",
+                paste_code_redirect_url: "",
+                client_id: "app_EMoamEEZ73f0CkXaXp7hrann",
+                client_secret: "",
+                scope: "openid profile email offline_access",
+                redirect_uri: "",
+                extra_authorize_params: &[],
+                requires_pkce: true,
+                is_anthropic_paste_code: false,
             }),
             subscription: Some(Subscription {
                 label: "ChatGPT Plus/Pro/Team",
@@ -174,12 +261,22 @@ pub fn lookup(pt: ProviderType) -> Option<ManifestProvider> {
             path: "/v1/chat/completions",
             requires_key: true,
             local_only: false,
+            // Same client as Responses — the public Codex/ChatGPT Desktop
+            // client_id. The refresh_token exchange yields the access_token
+            // ChatGPT Plus uses; Manifest routes to the private
+            // /backend-api/codex endpoint when this auth mode is detected.
             oauth: Some(ManifestOAuth {
-                token_url: "https://auth.openai.com/oauth/token",
-                client_id: "app_DoG7JaCkAU8T6mongo4zR1vM",
                 authorize_url: "https://auth.openai.com/oauth/authorize",
+                token_url: "https://auth.openai.com/oauth/token",
                 device_code_url: "",
-                device_token_url: "",
+                paste_code_redirect_url: "",
+                client_id: "app_EMoamEEZ73f0CkXaXp7hrann",
+                client_secret: "",
+                scope: "openid profile email offline_access",
+                redirect_uri: "",
+                extra_authorize_params: &[],
+                requires_pkce: true,
+                is_anthropic_paste_code: false,
             }),
             subscription: Some(Subscription {
                 label: "ChatGPT Plus/Pro/Team",
@@ -246,12 +343,23 @@ pub fn lookup(pt: ProviderType) -> Option<ManifestProvider> {
             path: "/v1/chat/completions",
             requires_key: true,
             local_only: false,
+            // xAI uses a 127.0.0.1:1455/callback redirect (not the standard
+            // /auth/callback path) and requires a `nonce` in the authorize
+            // URL. The Desktop OAuth client is published in the grok-cli
+            // tool — token-dealer exposes it as a public default; users
+            // can override via env or admin form.
             oauth: Some(ManifestOAuth {
-                token_url: "https://auth.x.ai/oauth/token",
-                client_id: "xai-cli-public",
-                authorize_url: "https://auth.x.ai/oauth/authorize",
+                authorize_url: "https://auth.x.ai/oauth2/authorize",
+                token_url: "https://auth.x.ai/oauth2/token",
                 device_code_url: "",
-                device_token_url: "",
+                paste_code_redirect_url: "",
+                client_id: "b1a00492-073a-47ea-816f-4c329264a828",
+                client_secret: "",
+                scope: "openid profile email offline_access grok-cli:access api:access",
+                redirect_uri: "http://127.0.0.1:1455/callback",
+                extra_authorize_params: &[],
+                requires_pkce: true,
+                is_anthropic_paste_code: false,
             }),
             subscription: Some(Subscription {
                 label: "Grok subscription",
@@ -312,12 +420,24 @@ pub fn lookup(pt: ProviderType) -> Option<ManifestProvider> {
             path: "/v1/chat/completions",
             requires_key: true,
             local_only: false,
+            // Minimax uses a custom user-code grant
+            // (urn:ietf:params:oauth:grant-type:user_code) — the user-code
+            // endpoint returns a verification URL where the user enters a
+            // one-time code, then the token endpoint exchanges the grant
+            // for an access + refresh token. Resource URL can be
+            // regional (`/anthropic` vs the default path).
             oauth: Some(ManifestOAuth {
-                token_url: "https://api.minimax.chat/oauth/token",
-                client_id: "minimax-cli",
                 authorize_url: "",
+                token_url: "https://api.minimax.chat/oauth/token",
                 device_code_url: "https://api.minimax.chat/oauth/device/code",
-                device_token_url: "https://api.minimax.chat/oauth/token",
+                paste_code_redirect_url: "",
+                client_id: "78257093-7e40-4613-99e0-527b14b39113",
+                client_secret: "",
+                scope: "group_id profile model.completion",
+                redirect_uri: "",
+                extra_authorize_params: &[],
+                requires_pkce: false,
+                is_anthropic_paste_code: false,
             }),
             subscription: Some(Subscription {
                 label: "MiniMax Coding Plan",
@@ -393,12 +513,24 @@ pub fn lookup(pt: ProviderType) -> Option<ManifestProvider> {
             path: "/v1/chat/completions",
             requires_key: true,
             local_only: false,
+            // GitHub's `Iv1.b507a08c87ecfe98` is the public VS Code Copilot
+            // OAuth client. Device-code flow: user visits
+            // https://github.com/login/device, types the user_code, GitHub
+            // exchanges it for an access_token. Token is then exchanged
+            // for a short-lived Copilot session token by the adapter
+            // (api.github.com/copilot_internal/v2/token).
             oauth: Some(ManifestOAuth {
-                token_url: "https://github.com/login/oauth/access_token",
-                client_id: "Iv1.b507a08c87ecfe98",
                 authorize_url: "https://github.com/login/oauth/authorize",
+                token_url: "https://github.com/login/oauth/access_token",
                 device_code_url: "https://github.com/login/device/code",
-                device_token_url: "https://github.com/login/oauth/access_token",
+                paste_code_redirect_url: "",
+                client_id: "Iv1.b507a08c87ecfe98",
+                client_secret: "",
+                scope: "read:user",
+                redirect_uri: "",
+                extra_authorize_params: &[],
+                requires_pkce: false,
+                is_anthropic_paste_code: false,
             }),
             subscription: Some(Subscription {
                 label: "GitHub Copilot subscription",
