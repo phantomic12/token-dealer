@@ -33,6 +33,11 @@ impl Default for ServerConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthConfig {
     pub enabled: bool,
+    /// Legacy single admin key. New code uses the `users` table
+    /// + API keys. This is here so existing `token-dealer.toml`
+    /// configs without a user table still work.
+    #[serde(default)]
+    pub admin_key: Option<String>,
     #[serde(default)]
     pub keys: Vec<AuthKey>,
 }
@@ -41,6 +46,7 @@ impl Default for AuthConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            admin_key: None,
             keys: Vec::new(),
         }
     }

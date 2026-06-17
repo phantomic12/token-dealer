@@ -142,6 +142,8 @@ pub async fn passthrough(
                         finished: true,
                         finish_reason: Some(if status.is_success() { "ok" } else { "error" }.to_string()),
                         client_ip: None,
+                        user_id: None,
+                        user_agent: None,
                     },
                 )
                 .map_err(|e| anyhow::anyhow!("log insert: {e}"))

@@ -118,8 +118,110 @@ fn run_migrations(conn: &Connection) -> anyhow::Result<()> {
             extra_json           TEXT NOT NULL DEFAULT '{}',
             refresh_buffer_secs  INTEGER NOT NULL DEFAULT 300
         );
+
+        -- ── Multi-user + per-user API keys (multi-tenant) ────────────────
+        CREATE TABLE IF NOT EXISTS users (
+            id           TEXT PRIMARY KEY,
+            email        TEXT UNIQUE NOT NULL,
+            name         TEXT NOT NULL,
+            password_hash TEXT,  -- argon2; nullable for API-key-only users
+            role         TEXT NOT NULL DEFAULT 'user',  -- 'admin' | 'user'
+            metadata     TEXT NOT NULL DEFAULT '{}',
+            created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            last_login_at DATETIME
+        );
+
+        CREATE TABLE IF NOT EXISTS api_keys (
+            id            TEXT PRIMARY KEY,
+            user_id       TEXT NOT NULL REFERENCES users(id),
+            key_hash      TEXT UNIQUE NOT NULL,  -- sha256 of plaintext key
+            key_prefix    TEXT NOT NULL,         -- first 12 chars, for display "tk-abcd1234…"
+            name          TEXT NOT NULL DEFAULT 'default',
+            last_used_at  DATETIME,
+            expires_at    DATETIME,
+            created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            revoked       BOOLEAN NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_api_keys_user ON api_keys(user_id);
+        CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash);
+
+        -- Per-user, per-day token usage. Single row per (user, day).
+        -- Used for billing + rate limiting + cost dashboards.
+        CREATE TABLE IF NOT EXISTS token_usage (
+            user_id        TEXT NOT NULL REFERENCES users(id),
+            day            TEXT NOT NULL,  -- YYYY-MM-DD UTC
+            input_tokens   INTEGER NOT NULL DEFAULT 0,
+            output_tokens  INTEGER NOT NULL DEFAULT 0,
+            cost_usd       REAL NOT NULL DEFAULT 0,
+            request_count  INTEGER NOT NULL DEFAULT 0,
+            updated_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (user_id, day)
+        );
+
+        -- Sessions for the WebUI. HttpOnly cookie stores the
+        -- session id; the plaintext value is sha256-hashed at rest
+        -- (same approach as api_keys).
+        CREATE TABLE IF NOT EXISTS sessions (
+            id          TEXT PRIMARY KEY,
+            user_id     TEXT NOT NULL REFERENCES users(id),
+            session_hash TEXT UNIQUE NOT NULL,
+            user_agent  TEXT,
+            ip          TEXT,
+            created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            expires_at  DATETIME NOT NULL,
+            last_seen_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+        CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
+
+        -- Per-model pricing. Updated by the pricing-sync background
+        -- task. Used for cost computation + tier budget enforcement.
+        CREATE TABLE IF NOT EXISTS model_prices (
+            model_id            TEXT PRIMARY KEY,
+            input_per_1k        REAL NOT NULL DEFAULT 0,
+            output_per_1k       REAL NOT NULL DEFAULT 0,
+            cached_input_per_1k REAL NOT NULL DEFAULT 0,
+            -- Output modality flags (bitfield packed in INTEGER for speed)
+            -- bit 0: text, bit 1: image_in, bit 2: image_out,
+            -- bit 3: audio_in, bit 4: audio_out, bit 5: video_in, bit 6: video_out
+            modality            INTEGER NOT NULL DEFAULT 1,
+            context_window      INTEGER NOT NULL DEFAULT 8192,
+            updated_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
+        -- Per-model default parameter scope. Applied to requests
+        -- when the client doesn't specify them. e.g. claude-opus-4
+        -- defaults to max_tokens=8192; gpt-4o defaults to 4096.
+        CREATE TABLE IF NOT EXISTS model_params (
+            model_id     TEXT PRIMARY KEY,
+            max_tokens   INTEGER,
+            temperature  REAL,
+            top_p        REAL,
+            extra_json   TEXT NOT NULL DEFAULT '{}',
+            updated_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
         "#,
     )?;
+    // Add the user_id column to request_log if it doesn't exist
+    // (idempotent ALTER). Older deployments predate the multi-user
+    // schema; this backfills the column.
+    let _ = conn.execute(
+        "ALTER TABLE request_log ADD COLUMN user_id TEXT",
+        rusqlite::params![],
+    );
+    let _ = conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_request_log_user ON request_log(user_id)",
+        rusqlite::params![],
+    );
+    // And the user-agent column for agent-type detection.
+    let _ = conn.execute(
+        "ALTER TABLE request_log ADD COLUMN user_agent TEXT",
+        rusqlite::params![],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE request_log ADD COLUMN cost_usd REAL",
+        rusqlite::params![],
+    );
     // Ensure a meta row exists for migrations tracking. We don't
     // version-control the schema; the IF NOT EXISTS clauses make
     // every run idempotent.

@@ -69,6 +69,8 @@ async fn make_state(mock_base: &str) -> AppState {
         key_store.clone(),
         http.clone(),
     );
+    let user_store = token_dealer::auth::UserStore::new(db.clone());
+    let pricing = token_dealer::cost::PricingStore::new(db.clone());
     let pipeline = Pipeline::new(
         registry,
         svc.clone(),
@@ -77,9 +79,14 @@ async fn make_state(mock_base: &str) -> AppState {
         HealthRegistry::new(),
         key_store.clone(),
         oauth.clone(),
+        user_store.clone(),
+        pricing.clone(),
     );
     let _ = dir;
     let metadata = token_dealer::metadata::MetadataStore::new();
+    let user_store = token_dealer::auth::UserStore::new(db.clone());
+    let pricing = token_dealer::cost::PricingStore::new(db.clone());
+    let telemetry = token_dealer::telemetry::Telemetry::init();
     AppState::new(
         pipeline,
         svc,
@@ -88,6 +95,9 @@ async fn make_state(mock_base: &str) -> AppState {
         metadata,
         key_store,
         oauth,
+        user_store,
+        pricing,
+        telemetry,
     )
 }
 
@@ -110,10 +120,11 @@ fn build_test_canonical_request() -> token_dealer::schema::canonical::CanonicalR
         tools: None,
         tool_choice: None,
         tier: Tier::Standard,
-        selected_model: "x".to_string(),
-        selected_provider: "x".to_string(),
-        request_id: Uuid::new_v4(),
-        extensions: Default::default(),
+                selected_model: "test-model".to_string(),
+                selected_provider: "test".to_string(),
+                request_id: uuid::Uuid::new_v4(),
+                extensions: std::collections::HashMap::new(),
+                metadata: token_dealer::schema::canonical::CanonicalMetadata::default(),
     }
 }
 
@@ -319,15 +330,13 @@ async fn non_standard_path_provider_routes_correctly() {
         db.clone(),
         &token_dealer::auth::MasterKey::from_env_or_generate().unwrap(),
     );
-    let key_store = token_dealer::auth::KeyStore::new(
-        db.clone(),
-        &token_dealer::auth::MasterKey::from_env_or_generate().unwrap(),
-    );
     let oauth = token_dealer::oauth::OAuthManager::new(
         db.clone(),
         key_store.clone(),
         http.clone(),
     );
+    let user_store = token_dealer::auth::UserStore::new(db.clone());
+    let pricing = token_dealer::cost::PricingStore::new(db.clone());
     let pipeline = Pipeline::new(
         registry,
         svc.clone(),
@@ -336,7 +345,12 @@ async fn non_standard_path_provider_routes_correctly() {
         HealthRegistry::new(),
         key_store.clone(),
         oauth.clone(),
+        user_store.clone(),
+        pricing.clone(),
     );
+    let user_store = token_dealer::auth::UserStore::new(db.clone());
+    let pricing = token_dealer::cost::PricingStore::new(db.clone());
+    let telemetry = token_dealer::telemetry::Telemetry::init();
     let state = AppState::new(
         pipeline,
         svc,
@@ -345,6 +359,9 @@ async fn non_standard_path_provider_routes_correctly() {
         token_dealer::metadata::MetadataStore::new(),
         key_store,
         oauth,
+        user_store,
+        pricing,
+        telemetry,
     );
     let app = build_router(state);
 
@@ -476,15 +493,8 @@ async fn fallback_chain_skips_500_provider_to_next() {
         key_store.clone(),
         http.clone(),
     );
-    let key_store = token_dealer::auth::KeyStore::new(
-        db.clone(),
-        &token_dealer::auth::MasterKey::from_env_or_generate().unwrap(),
-    );
-    let oauth = token_dealer::oauth::OAuthManager::new(
-        db.clone(),
-        key_store.clone(),
-        http.clone(),
-    );
+    let user_store = token_dealer::auth::UserStore::new(db.clone());
+    let pricing = token_dealer::cost::PricingStore::new(db.clone());
     let pipeline = Pipeline::new(
         registry,
         svc.clone(),
@@ -493,7 +503,12 @@ async fn fallback_chain_skips_500_provider_to_next() {
         HealthRegistry::new(),
         key_store.clone(),
         oauth.clone(),
+        user_store.clone(),
+        pricing.clone(),
     );
+    let user_store = token_dealer::auth::UserStore::new(db.clone());
+    let pricing = token_dealer::cost::PricingStore::new(db.clone());
+    let telemetry = token_dealer::telemetry::Telemetry::init();
     let state = AppState::new(
         pipeline,
         svc,
@@ -502,6 +517,9 @@ async fn fallback_chain_skips_500_provider_to_next() {
         token_dealer::metadata::MetadataStore::new(),
         key_store,
         oauth,
+        user_store,
+        pricing,
+        telemetry,
     );
     let app = build_router(state);
 
@@ -604,6 +622,8 @@ async fn auth_rejects_request_with_wrong_key() {
         key_store.clone(),
         http.clone(),
     );
+    let user_store = token_dealer::auth::UserStore::new(db.clone());
+    let pricing = token_dealer::cost::PricingStore::new(db.clone());
     let pipeline = Pipeline::new(
         registry,
         svc.clone(),
@@ -612,7 +632,12 @@ async fn auth_rejects_request_with_wrong_key() {
         HealthRegistry::new(),
         key_store.clone(),
         oauth.clone(),
+        user_store.clone(),
+        pricing.clone(),
     );
+    let user_store = token_dealer::auth::UserStore::new(db.clone());
+    let pricing = token_dealer::cost::PricingStore::new(db.clone());
+    let telemetry = token_dealer::telemetry::Telemetry::init();
     let state = AppState::new(
         pipeline,
         svc,
@@ -621,6 +646,9 @@ async fn auth_rejects_request_with_wrong_key() {
         token_dealer::metadata::MetadataStore::new(),
         key_store,
         oauth,
+        user_store,
+        pricing,
+        telemetry,
     );
 
     // No auth header
@@ -874,15 +902,8 @@ async fn image_endpoint_passes_through_to_provider() {
         key_store.clone(),
         http.clone(),
     );
-    let key_store = token_dealer::auth::KeyStore::new(
-        db.clone(),
-        &token_dealer::auth::MasterKey::from_env_or_generate().unwrap(),
-    );
-    let oauth = token_dealer::oauth::OAuthManager::new(
-        db.clone(),
-        key_store.clone(),
-        http.clone(),
-    );
+    let user_store = token_dealer::auth::UserStore::new(db.clone());
+    let pricing = token_dealer::cost::PricingStore::new(db.clone());
     let pipeline = Pipeline::new(
         registry,
         svc.clone(),
@@ -891,7 +912,12 @@ async fn image_endpoint_passes_through_to_provider() {
         HealthRegistry::new(),
         key_store.clone(),
         oauth.clone(),
+        user_store.clone(),
+        pricing.clone(),
     );
+    let user_store = token_dealer::auth::UserStore::new(db.clone());
+    let pricing = token_dealer::cost::PricingStore::new(db.clone());
+    let telemetry = token_dealer::telemetry::Telemetry::init();
     let state = AppState::new(
         pipeline,
         svc,
@@ -900,6 +926,9 @@ async fn image_endpoint_passes_through_to_provider() {
         token_dealer::metadata::MetadataStore::new(),
         key_store,
         oauth,
+        user_store,
+        pricing,
+        telemetry,
     );
     let app = build_router(state);
 

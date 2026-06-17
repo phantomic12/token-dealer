@@ -27,6 +27,8 @@ pub struct Pipeline {
     pub health: crate::providers::HealthRegistry,
     pub key_store: crate::auth::KeyStore,
     pub oauth: crate::oauth::OAuthManager,
+    pub user_store: crate::auth::UserStore,
+    pub pricing: crate::cost::PricingStore,
 }
 
 pub struct RoutingOutput {
@@ -34,6 +36,11 @@ pub struct RoutingOutput {
     pub route: SelectedRoute,
     pub key: String,
     pub request_id: Uuid,
+    /// Per-request user context (set by the chat handler before
+    /// dispatching to the pipeline). Optional — anonymous requests
+    /// leave it as `None`.
+    pub user_id: Option<String>,
+    pub user_agent: Option<String>,
 }
 
 impl Pipeline {
@@ -45,6 +52,8 @@ impl Pipeline {
         health: crate::providers::HealthRegistry,
         key_store: crate::auth::KeyStore,
         oauth: crate::oauth::OAuthManager,
+        user_store: crate::auth::UserStore,
+        pricing: crate::cost::PricingStore,
     ) -> Self {
         let selector = Selector::new(registry.clone());
         Self {
@@ -56,6 +65,8 @@ impl Pipeline {
             health,
             key_store,
             oauth,
+            user_store,
+            pricing,
         }
     }
 
@@ -138,6 +149,8 @@ impl Pipeline {
             route,
             key,
             request_id,
+            user_id: None,
+            user_agent: None,
         })
     }
 
@@ -232,11 +245,12 @@ impl Pipeline {
         use crate::db::queries::{AttemptLog, RequestLog};
         let input_tokens = result.response.usage.input_tokens;
         let output_tokens = result.response.usage.output_tokens;
-        let cost = crate::cost::calculate(
+        let cost = crate::cost::calculate_with_db(
             &result.response.provider,
             &result.response.model,
             input_tokens,
             output_tokens,
+            Some(&self.pricing),
         );
         let log = RequestLog {
             id: routed.request_id.to_string(),
@@ -254,8 +268,18 @@ impl Pipeline {
             finished: true,
             finish_reason: result.response.finish_reason.clone(),
             client_ip: None,
+            user_id: routed.user_id.clone(),
+            user_agent: routed.user_agent.clone(),
         };
         crate::log::log_request(&self.db, log);
+        // Per-user daily token usage + cost. Bumps the row keyed by
+        // (user_id, day) atomically.
+        if let (Some(uid), Some(c)) = (routed.user_id.as_ref(), cost) {
+            let _ = self
+                .user_store
+                .record_usage(uid, input_tokens, output_tokens, c)
+                .await;
+        }
         for (idx, a) in result.attempts.iter().enumerate() {
             crate::log::log_attempt(
                 &self.db,

@@ -4,6 +4,7 @@
 //! from Rust + an embedded stylesheet. HTMX loads from a CDN.
 
 use super::AppState;
+use super::auth as mw;
 use axum::{
     extract::{Path, State},
     http::{header, StatusCode},
@@ -213,7 +214,7 @@ form.inline input, form.inline select { width: auto; min-width: 120px; }
 
 const HTMX_URL: &str = "https://unpkg.com/htmx.org@1.9.10";
 
-fn layout(active: &str, title: &str, body: &str, flash: Option<&str>) -> String {
+pub(crate) fn layout(active: &str, title: &str, body: &str, flash: Option<&str>) -> String {
     let nav = |href: &str, label: &str, key: &str| -> String {
         let cls = if active == key { "active" } else { "" };
         format!(r##"<a href="{href}" class="{cls}">{label}</a>"##)
@@ -521,6 +522,8 @@ pub async fn playground_send(
         },
         key: String::new(),
         request_id,
+        user_id: None,
+        user_agent: None,
     };
     let cfg = state.config.snapshot().await;
     let cfg_key = cfg
@@ -1437,4 +1440,220 @@ fn html_escape(s: &str) -> String {
         }
     }
     out
+}
+
+// ── Multi-user admin pages ───────────────────────────────────────────
+
+pub async fn users_page(
+    State(state): State<AppState>,
+    axum::extract::Extension(user): axum::extract::Extension<crate::auth::UserContext>,
+) -> Response {
+    if !user.is_admin() {
+        return (
+            StatusCode::FORBIDDEN,
+            Html("<h1>Forbidden</h1><p>admin only</p>".to_string()),
+        )
+            .into_response();
+    }
+    let users = state.user_store.list_users().await.unwrap_or_default();
+    let rows: String = users
+        .iter()
+        .map(|u| {
+            format!(
+                "<tr><td><code>{}</code></td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                html_escape(&u.id),
+                html_escape(&u.email),
+                html_escape(&u.name),
+                u.role.as_str(),
+                u.last_login_at
+                    .map(|d| d.format("%Y-%m-%d %H:%M").to_string())
+                    .unwrap_or_else(|| "—".to_string()),
+            )
+        })
+        .collect();
+
+    let body = format!(
+        r##"
+<h1>Users</h1>
+<p class="dim">All users + their roles. Admin-only.</p>
+
+<form hx-post="/admin/users" hx-target="#user-result" hx-swap="innerHTML" class="wizard-panel">
+  <div class="row three">
+    <div>
+      <label>Email</label>
+      <input name="email" type="email" required />
+    </div>
+    <div>
+      <label>Name</label>
+      <input name="name" />
+    </div>
+    <div>
+      <label>Password (optional)</label>
+      <input name="password" type="password" />
+    </div>
+  </div>
+  <div class="row">
+    <div>
+      <label>Role</label>
+      <select name="role">
+        <option value="user">user</option>
+        <option value="admin">admin</option>
+      </select>
+    </div>
+  </div>
+  <div class="actions">
+    <button type="submit">Create user</button>
+  </div>
+  <div id="user-result"></div>
+</form>
+
+<h2>Existing users ({n})</h2>
+<table class="kv">
+  <tr><th>id</th><th>email</th><th>name</th><th>role</th><th>last login</th></tr>
+  {rows}
+</table>
+
+<h2>API keys</h2>
+<p class="dim">Generate keys for service accounts or share with users.</p>
+<div id="admin-keys">
+  <form hx-post="/admin/users/__self__/keys" hx-target="#admin-keys-result" hx-swap="innerHTML" class="wizard-panel">
+    <div class="row">
+      <div>
+        <label>User ID</label>
+        <input name="user_id" required />
+      </div>
+      <div>
+        <label>Name (e.g. "ci", "production", "test")</label>
+        <input name="name" value="default" />
+      </div>
+      <div>
+        <button type="submit">Create key</button>
+      </div>
+    </div>
+  </form>
+  <div id="admin-keys-result"></div>
+</div>
+"##,
+        n = users.len(),
+        rows = rows
+    );
+
+    Html(layout("users", "Users", &body, None)).into_response()
+}
+
+pub async fn account_page(
+    State(state): State<AppState>,
+    axum::extract::Extension(user): axum::extract::Extension<crate::auth::UserContext>,
+) -> Response {
+    let usage = state
+        .user_store
+        .get_usage_today(&user.user_id)
+        .await
+        .unwrap_or((0, 0, 0.0, 0));
+    let keys = state
+        .user_store
+        .list_api_keys(&user.user_id)
+        .await
+        .unwrap_or_default();
+
+    let key_rows: String = keys
+        .iter()
+        .map(|k| {
+            format!(
+                "<tr><td>{}</td><td><code>{}</code></td><td>{}</td><td>{}</td>\
+                 <td><button hx-delete=\"/auth/keys/{}\" hx-target=\"#account\" hx-swap=\"outerHTML\">revoke</button></td></tr>",
+                html_escape(&k.name),
+                html_escape(&k.key_prefix),
+                k.created_at.format("%Y-%m-%d"),
+                k.last_used_at
+                    .map(|d| d.format("%Y-%m-%d %H:%M").to_string())
+                    .unwrap_or_else(|| "—".to_string()),
+                k.id
+            )
+        })
+        .collect();
+
+    let body = format!(
+        r##"
+<h1>Account</h1>
+<p class="dim">{email} · {role}</p>
+
+<h2>Today's usage</h2>
+<div class="cards">
+  <div class="card"><div class="label">Input tokens</div><div class="value">{input}</div></div>
+  <div class="card"><div class="label">Output tokens</div><div class="value">{output}</div></div>
+  <div class="card"><div class="label">Cost</div><div class="value">${cost:.4}</div></div>
+  <div class="card"><div class="label">Requests</div><div class="value">{reqs}</div></div>
+</div>
+
+<h2>API keys</h2>
+<form hx-post="/auth/keys" hx-target="#new-key-result" hx-swap="innerHTML" class="wizard-panel">
+  <div class="row">
+    <div>
+      <label>Key name (e.g. "laptop", "ci")</label>
+      <input name="name" value="default" />
+    </div>
+    <div>
+      <button type="submit">Create key</button>
+    </div>
+  </div>
+  <div id="new-key-result"></div>
+</form>
+
+<table class="kv">
+  <tr><th>name</th><th>prefix</th><th>created</th><th>last used</th><th></th></tr>
+  {key_rows}
+</table>
+
+<h2>Sign out</h2>
+<button hx-post="/auth/logout" hx-redirect="/ui/login">Sign out</button>
+"##,
+        email = html_escape(&user.email),
+        role = user.role.as_str(),
+        input = usage.0,
+        output = usage.1,
+        cost = usage.2,
+        reqs = usage.3,
+        key_rows = key_rows
+    );
+
+    Html(layout("account", "Account", &body, None)).into_response()
+}
+
+pub async fn pricing_page(
+    State(state): State<AppState>,
+    axum::extract::Extension(_user): axum::extract::Extension<crate::auth::UserContext>,
+) -> Response {
+    let prices = state.pricing.list().await.unwrap_or_default();
+    let rows: String = prices
+        .iter()
+        .map(|p| {
+            format!(
+                "<tr><td><code>{}</code></td><td>${:.4}</td><td>${:.4}</td><td>{}</td><td>{}</td></tr>",
+                html_escape(&p.model_id),
+                p.input_per_1m,
+                p.output_per_1m,
+                p.context_window,
+                p.modality
+            )
+        })
+        .collect();
+
+    let body = format!(
+        r##"
+<h1>Pricing</h1>
+<p class="dim">Per-model USD prices (per 1M tokens). Used by the cost tracker.</p>
+
+<table class="kv">
+  <tr><th>model</th><th>input / 1M</th><th>output / 1M</th><th>context</th><th>modality bits</th></tr>
+  {rows}
+</table>
+
+<p class="dim">{n} models with explicit pricing. Others fall back to the provider's default.</p>
+"##,
+        n = prices.len(),
+        rows = rows
+    );
+
+    Html(layout("pricing", "Pricing", &body, None)).into_response()
 }

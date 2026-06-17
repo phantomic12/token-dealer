@@ -65,6 +65,16 @@ aes-gcm = "0.10"
 rand = "0.8"
 hex = "0.4"
 
+# Argon2 for password hashing (multi-user auth)
+argon2 = "0.5"
+sha2 = "0.10"
+
+# OTLP trace export
+opentelemetry = "0.27"
+opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.27", features = ["grpc-tonic", "trace"] }
+opentelemetry-semantic-conventions = "0.27"
+
 # Real token counting for cost + scorer
 tiktoken-rs = "0.7"
 

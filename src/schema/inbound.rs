@@ -113,6 +113,7 @@ impl InboundRequest {
             selected_provider,
             request_id,
             extensions: HashMap::new(),
+            metadata: crate::schema::canonical::CanonicalMetadata::default(),
         })
     }
 }

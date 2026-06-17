@@ -20,6 +20,32 @@ pub async fn health() -> impl IntoResponse {
     (StatusCode::OK, Json(json!({"status": "ok"})))
 }
 
+/// Public stats for the marketing site / landing page. No auth
+/// required. Returns aggregate counters — total requests served,
+/// total tokens, total USD cost, top providers. Updated continuously
+/// from the token_usage + request_log tables.
+pub async fn public_stats(State(state): State<AppState>) -> Response {
+    let (input, output, cost, reqs) = state.user_store.get_global_usage_today().await.unwrap_or((0, 0, 0.0, 0));
+    let snap = state.config.snapshot().await;
+    let provider_count = snap.providers.len();
+    Json(json!({
+        "today": {
+            "input_tokens": input,
+            "output_tokens": output,
+            "cost_usd": cost,
+            "request_count": reqs,
+        },
+        "providers_configured": provider_count,
+        "tiers": snap.tiers.len(),
+    }))
+    .into_response()
+}
+
+/// Liveness/readiness — no auth, no DB.
+pub async fn healthz() -> impl IntoResponse {
+    (StatusCode::OK, Json(json!({"status": "ok"})))
+}
+
 pub async fn list_models(State(state): State<AppState>) -> impl IntoResponse {
     let providers = state.pipeline.registry.list().await;
     let mut models = Vec::new();
@@ -47,6 +73,7 @@ pub async fn reload_config(State(state): State<AppState>) -> impl IntoResponse {
 pub async fn chat_completions(
     State(state): State<AppState>,
     headers: HeaderMap,
+    axum::extract::Extension(user): axum::extract::Extension<crate::auth::UserContext>,
     Json(body): Json<Value>,
 ) -> Response {
     let pre = match parse_inbound(body) {
@@ -81,7 +108,7 @@ pub async fn chat_completions(
         .await;
     let tier = inbound_tier_hint.unwrap_or(score.tier);
     let model_override = model_override.or(score.model_override);
-    let routed = match state
+    let mut routed = match state
         .pipeline
         .route(pre.request, model_override, tier)
         .await
@@ -89,6 +116,20 @@ pub async fn chat_completions(
         Ok(r) => r,
         Err(e) => return e.into_response(),
     };
+
+    // Stamp the routing output with the user context + agent type
+    // for downstream logging + per-user usage tracking. The user
+    // is "anonymous" when auth is disabled (legacy single-tenant mode).
+    routed.user_id = if user.via == "legacy_key" || user.via == "env_password" {
+        None
+    } else {
+        Some(user.user_id.clone())
+    };
+    if let Some(ua) = headers.get("user-agent").and_then(|v| v.to_str().ok()) {
+        routed.user_agent = Some(ua.to_string());
+        routed.canonical.metadata.agent_type =
+            Some(crate::agents::detect_agent(Some(ua)).as_str().to_string());
+    }
 
     let provider_id = routed.route.provider_id.clone();
     let model_id = routed.route.model_id.clone();

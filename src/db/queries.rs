@@ -22,6 +22,8 @@ pub struct RequestLog {
     pub finished: bool,
     pub finish_reason: Option<String>,
     pub client_ip: Option<String>,
+    pub user_id: Option<String>,
+    pub user_agent: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -68,8 +70,9 @@ pub fn insert_request(conn: &Connection, log: &RequestLog) -> rusqlite::Result<(
         r#"INSERT INTO request_log
            (id, tier, requested_model, routed_model, routed_provider,
             total_latency_ms, input_tokens, output_tokens, cache_read_tokens,
-            cost_usd, truncated, fallback_count, finished, finish_reason, client_ip)
-           VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)"#,
+            cost_usd, truncated, fallback_count, finished, finish_reason, client_ip,
+            user_id, user_agent)
+           VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)"#,
         params![
             log.id,
             log.tier,
@@ -86,6 +89,8 @@ pub fn insert_request(conn: &Connection, log: &RequestLog) -> rusqlite::Result<(
             log.finished as i32,
             log.finish_reason,
             log.client_ip,
+            log.user_id,
+            log.user_agent,
         ],
     )?;
     Ok(())

@@ -146,6 +146,21 @@ pub struct CanonicalRequest {
     /// Each adapter decides whether to forward them.
     #[serde(default)]
     pub extensions: HashMap<String, serde_json::Value>,
+
+    /// Per-request metadata populated by the chat handler. Used for
+    /// agent-type detection, debug fields in the request log, and
+    /// future per-agent routing rules.
+    #[serde(default)]
+    pub metadata: CanonicalMetadata,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CanonicalMetadata {
+    /// Detected agent type from the User-Agent (claude_code, cursor,
+    /// aider, etc.). Set by the chat handler before dispatch.
+    pub agent_type: Option<String>,
+    /// Client-supplied request ID for end-to-end tracing.
+    pub client_request_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -91,8 +91,12 @@ async fn main() -> anyhow::Result<()> {
     let key_store = KeyStore::new(db.clone(), &master);
     let oauth = token_dealer::oauth::OAuthManager::new(db.clone(), key_store.clone(), http.clone());
     token_dealer::oauth::spawn_refresher(oauth.clone());
-    let pipeline = Pipeline::new(registry, config.clone(), http, db.clone(), health.clone(), key_store.clone(), oauth.clone());
-    let state = AppState::new(pipeline, config, health, db, metadata, key_store, oauth);
+    let user_store = token_dealer::auth::UserStore::new(db.clone());
+    let pricing = token_dealer::cost::PricingStore::new(db.clone());
+    let _ = pricing.seed_defaults().await;
+    let telemetry = token_dealer::telemetry::Telemetry::init();
+    let pipeline = Pipeline::new(registry, config.clone(), http, db.clone(), health.clone(), key_store.clone(), oauth.clone(), user_store.clone(), pricing.clone());
+    let state = AppState::new(pipeline, config, health, db, metadata, key_store, oauth, user_store, pricing, telemetry);
 
     let app = build_router(state);
     let listener = tokio::net::TcpListener::bind(&bind)
