@@ -226,5 +226,9 @@ fn run_migrations(conn: &Connection) -> anyhow::Result<()> {
     // version-control the schema; the IF NOT EXISTS clauses make
     // every run idempotent.
     let _ = params![];
+
+    // Discovery cache (filled at startup by `discover_all`).
+    crate::discovery::run_migration(conn)?;
+
     Ok(())
 }

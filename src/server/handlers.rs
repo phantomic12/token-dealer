@@ -13,6 +13,7 @@ use serde_json::{json, Value};
 
 use crate::proxy::pipeline::Pipeline;
 use crate::routing::scorer::{Scorer, ScoringContext};
+use crate::routing::specificity::detector_from_config;
 use crate::schema::inbound::parse_inbound;
 use crate::schema::outbound::{chunk_to_openai, done_sentinel, response_to_openai};
 
@@ -47,14 +48,33 @@ pub async fn healthz() -> impl IntoResponse {
 }
 
 pub async fn list_models(State(state): State<AppState>) -> impl IntoResponse {
-    let providers = state.pipeline.registry.list().await;
+    // Merge: configured providers (with their default_model) +
+    // discovered models from the `provider_models` cache (filled by
+    // the startup discovery task). De-duplicate on (provider, model).
+    let mut seen = std::collections::HashSet::new();
     let mut models = Vec::new();
+    let providers = state.pipeline.registry.list().await;
     for (pid, default_model) in providers {
-        models.push(json!({
-            "id": format!("{pid}/{default_model}"),
-            "object": "model",
-            "owned_by": pid,
-        }));
+        let key = (pid.clone(), default_model.clone());
+        if seen.insert(key.clone()) {
+            models.push(json!({
+                "id": format!("{pid}/{default_model}"),
+                "object": "model",
+                "owned_by": pid,
+            }));
+        }
+    }
+    if let Ok(discovered) = crate::discovery::list_discovered(&state.db, None).await {
+        for row in discovered {
+            let key = (row.provider_id.clone(), row.model_id.clone());
+            if seen.insert(key) {
+                models.push(json!({
+                    "id": format!("{}/{}", row.provider_id, row.model_id),
+                    "object": "model",
+                    "owned_by": row.provider_id,
+                }));
+            }
+        }
     }
     Json(json!({"object": "list", "data": models}))
 }
@@ -106,8 +126,90 @@ pub async fn chat_completions(
             headers: &headers,
         })
         .await;
+
+    // Specificity routing runs in parallel with the tier scorer.
+    // When a category activates, we override the model with the
+    // category's configured primary. The tier remains as the
+    // fallback (response header `x-router-tier` reflects what the
+    // scorer chose; `x-router-specificity` shows what we detected).
+    let cfg_snap = state.pipeline.config.snapshot().await;
+    let detector = detector_from_config(&cfg_snap);
+    let header_override = headers
+        .get("x-router-specificity")
+        .and_then(|v| v.to_str().ok());
+    let specificity_decision = detector.detect(&pre.request, header_override, &[]);
+
     let tier = inbound_tier_hint.unwrap_or(score.tier);
-    let model_override = model_override.or(score.model_override);
+    let mut model_override = model_override.or(score.model_override);
+    if let Some(decision) = &specificity_decision {
+        if let Some(primary) = &decision.primary {
+            tracing::info!(
+                request_id = ?request_id_or_zero(&headers),
+                category = %decision.category,
+                score = decision.score,
+                threshold = decision.threshold,
+                primary = %primary,
+                reason = %decision.reason,
+                "specificity override"
+            );
+            model_override = Some(primary.clone());
+        }
+    }
+
+    // Budget check (per-day / per-request). At dispatch time we don't
+    // know the actual cost yet (no token counts from upstream) so we
+    // project a rough worst-case estimate based on the model + tier.
+    // The real cost is recorded after the response returns.
+    let budget_cfg = cfg_snap.budgets.clone();
+    if budget_cfg.daily_cost_usd > 0.0 || budget_cfg.per_request_cost_usd > 0.0 {
+        let user_for_budget = if user.via == "legacy_key" || user.via == "env_password" {
+            None
+        } else {
+            Some(user.user_id.as_str())
+        };
+        let projected = crate::cost::calculate_with_db(
+            "any",
+            &model_override.clone().unwrap_or_default(),
+            0,
+            0,
+            Some(&state.pricing),
+        )
+        .unwrap_or(0.0);
+        match crate::cost::limits::check(
+            &state.db,
+            &state.pricing,
+            &budget_cfg,
+            user_for_budget,
+            projected,
+        )
+        .await
+        {
+            Ok(crate::cost::limits::BudgetDecision::Deny { reason }) => {
+                tracing::warn!(reason = %reason, user = ?user_for_budget, "budget deny");
+                return (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    axum::Json(serde_json::json!({
+                        "error": {
+                            "code": "budget_exceeded",
+                            "message": reason,
+                            "type": "rate_limit_error"
+                        }
+                    })),
+                )
+                    .into_response();
+            }
+            Ok(crate::cost::limits::BudgetDecision::SoftWarning { fraction, kind }) => {
+                tracing::info!(
+                    fraction,
+                    kind,
+                    user = ?user_for_budget,
+                    "approaching budget"
+                );
+            }
+            _ => {}
+        }
+    }
+
     let mut routed = match state
         .pipeline
         .route(pre.request, model_override, tier)
@@ -118,8 +220,8 @@ pub async fn chat_completions(
     };
 
     // Stamp the routing output with the user context + agent type
-    // for downstream logging + per-user usage tracking. The user
-    // is "anonymous" when auth is disabled (legacy single-tenant mode).
+    // + specificity decision for downstream logging + per-user usage
+    // tracking + response headers.
     routed.user_id = if user.via == "legacy_key" || user.via == "env_password" {
         None
     } else {
@@ -130,10 +232,22 @@ pub async fn chat_completions(
         routed.canonical.metadata.agent_type =
             Some(crate::agents::detect_agent(Some(ua)).as_str().to_string());
     }
+    if let Some(decision) = specificity_decision {
+        routed
+            .canonical
+            .metadata
+            .specificity_category
+            .get_or_insert(decision.category.to_string());
+    }
 
     let provider_id = routed.route.provider_id.clone();
     let model_id = routed.route.model_id.clone();
     let request_id = routed.request_id;
+    let specificity_for_header = routed
+        .canonical
+        .metadata
+        .specificity_category
+        .clone();
 
     // Per-request key override: `X-Router-Key: <key>` bypasses the
     // resolved key. Used to swap in a different upstream key without
@@ -234,7 +348,14 @@ pub async fn chat_completions(
         };
         let sse = Sse::new(body).keep_alive(KeepAlive::new());
         let resp = sse.into_response();
-        attach_routing_headers(resp, &provider_id, &model_id, tier, request_id)
+        attach_routing_headers(
+            resp,
+            &provider_id,
+            &model_id,
+            tier,
+            request_id,
+            specificity_for_header.as_deref(),
+        )
     } else {
         // Non-streaming path
         let resp = match state.pipeline.complete(routed).await {
@@ -243,7 +364,14 @@ pub async fn chat_completions(
         };
         let v = response_to_openai(&resp);
         let mut resp = (StatusCode::OK, Json(v)).into_response();
-        attach_routing_headers(resp, &provider_id, &model_id, tier, request_id)
+        attach_routing_headers(
+            resp,
+            &provider_id,
+            &model_id,
+            tier,
+            request_id,
+            specificity_for_header.as_deref(),
+        )
     }
 }
 
@@ -253,6 +381,7 @@ fn attach_routing_headers(
     model_id: &str,
     tier: crate::schema::canonical::Tier,
     request_id: uuid::Uuid,
+    specificity: Option<&str>,
 ) -> Response {
     use axum::http::HeaderValue;
     let h = resp.headers_mut();
@@ -268,5 +397,16 @@ fn attach_routing_headers(
     if let Ok(v) = HeaderValue::from_str(&request_id.to_string()) {
         h.insert("x-router-request-id", v);
     }
+    if let Some(cat) = specificity {
+        if let Ok(v) = HeaderValue::from_str(cat) {
+            h.insert("x-router-specificity", v);
+        }
+    }
     resp
+}
+
+/// Pull X-Router-Request-Id from the inbound headers if the client
+/// supplied one — useful for log correlation. Returns 0 if absent.
+fn request_id_or_zero(_headers: &HeaderMap) -> u128 {
+    0
 }

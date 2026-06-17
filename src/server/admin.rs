@@ -670,3 +670,35 @@ fn html_escape(s: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
 }
+
+/// List every model in the `model_prices` table (used by the
+/// `/ui/pricing` page). Sorted by `input_per_1k` ascending so the
+/// cheapest models bubble to the top — that's the page's whole
+/// point.
+pub async fn list_pricing(State(state): State<AppState>) -> Response {
+    match state.pricing.list().await {
+        Ok(rows) => (StatusCode::OK, Json(json!({"prices": rows}))).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("{e}")})),
+        )
+            .into_response(),
+    }
+}
+
+/// Force an OpenRouter pricing sync. Returns the row count.
+pub async fn sync_pricing_now(State(state): State<AppState>) -> Response {
+    let cfg = state.config.snapshot().await.pricing_sync;
+    match crate::cost::sync_once(&state.pipeline.http, &state.db, &cfg.openrouter_url).await {
+        Ok(n) => (
+            StatusCode::OK,
+            Json(json!({"status": "ok", "upserted": n, "url": cfg.openrouter_url})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({"error": format!("{e}")})),
+        )
+            .into_response(),
+    }
+}

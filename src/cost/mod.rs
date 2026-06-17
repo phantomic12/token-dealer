@@ -3,8 +3,8 @@
 //! `PricingStore` is the DB-backed model price table. `calculate()`
 //! resolves a (provider_id, model_id) pair to a per-request cost
 //! using:
-//!   1. The exact `model_prices` row (if seeded from models.dev or
-//!      user-overridden)
+//!   1. The exact `model_prices` row (if seeded from OpenRouter sync
+//!      or user-overridden)
 //!   2. The provider's default-model price (from `default_price_*`)
 //!   3. A conservative fallback for unknown providers
 //!
@@ -14,6 +14,11 @@ use crate::db::Db;
 use crate::providers::manifest;
 use crate::providers::resolve_alias;
 use crate::tokens;
+
+pub mod openrouter_sync;
+pub mod limits;
+
+pub use openrouter_sync::{sync_once, spawn_pricing_sync};
 
 /// DB-backed pricing store. Holds the `model_prices` table and
 /// provides per-(provider, model) cost lookups.

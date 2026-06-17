@@ -6,6 +6,7 @@ pub mod auth;
 pub mod config;
 pub mod cost;
 pub mod db;
+pub mod discovery;
 pub mod error;
 pub mod log;
 pub mod metadata;
@@ -33,6 +34,9 @@ pub struct AppState {
     pub user_store: auth::UserStore,
     pub pricing: cost::PricingStore,
     pub telemetry: telemetry::Telemetry,
+    /// Server-Sent Events broadcast bus. Lazily initialized by the
+    /// SSE handler; cheap to clone (broadcast::Sender).
+    pub events: Arc<server::events::EventBus>,
 }
 
 impl AppState {
@@ -60,6 +64,7 @@ impl AppState {
             user_store,
             pricing,
             telemetry,
+            events: Arc::new(server::events::EventBus::default()),
         }
     }
 }

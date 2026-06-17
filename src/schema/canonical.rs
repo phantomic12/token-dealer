@@ -161,6 +161,17 @@ pub struct CanonicalMetadata {
     pub agent_type: Option<String>,
     /// Client-supplied request ID for end-to-end tracing.
     pub client_request_id: Option<String>,
+    /// Detected specificity category (coding, web_browsing, ...) when
+    /// the specificity detector fires. `None` means the request was
+    /// routed by tier alone (no category activated).
+    #[serde(default)]
+    pub specificity_category: Option<String>,
+    /// Score that triggered the specificity override (debug aid).
+    #[serde(default)]
+    pub specificity_score: Option<u32>,
+    /// Threshold the score had to clear (debug aid).
+    #[serde(default)]
+    pub specificity_threshold: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -8,7 +8,10 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 use std::time::Duration;
 use token_dealer::{
-    config::{ConfigService, DatabaseConfig, ProviderConfig, ProviderType, RouterConfig, TierConfig, TierTimeoutsSet},
+    config::{
+        ConfigService, DatabaseConfig, ProviderConfig, ProviderType, RouterConfig,
+        SpecificityCategory, SpecificityConfig, SpecificityRule, TierConfig, TierTimeoutsSet,
+    },
     db::Db,
     providers::{HealthRegistry, ProviderRegistry},
     proxy::pipeline::Pipeline,
@@ -954,3 +957,236 @@ async fn image_endpoint_passes_through_to_provider() {
     let body: Value = serde_json::from_slice(&body_bytes).unwrap();
     assert_eq!(body["data"][0]["url"], "https://example.com/img.png");
 }
+
+/// Build an AppState with a custom specificity config. Used by the
+/// specificity-routing integration tests.
+async fn make_state_with_specificity(
+    mock_base: &str,
+    mock_id: &str,
+    specificity: SpecificityConfig,
+) -> AppState {
+    let mut cfg = RouterConfig::default();
+    cfg.database = DatabaseConfig { path: ":memory:".to_string() };
+    cfg.providers.push(ProviderConfig {
+        id: mock_id.to_string(),
+        provider_type: ProviderType::Openai,
+        key: Some("test-key".to_string()),
+        base_url: Some(mock_base.to_string()),
+        default_model: Some(format!("{mock_id}-model")),
+        path: None,
+    });
+    cfg.tiers.insert(
+        "standard".to_string(),
+        TierConfig {
+            primary: format!("{mock_id}/{mock_id}-model"),
+            fallbacks: vec![],
+            allow_tier_downgrade: false,
+            downgrade_to: None,
+            min_context_window: None,
+            timeouts: TierTimeoutsSet::default(),
+        },
+    );
+    cfg.specificity = specificity;
+    let tmp = std::env::temp_dir().join(format!(
+        "td-spec-{}.toml",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::write(&tmp, toml::to_string(&cfg).unwrap()).unwrap();
+    let svc = ConfigService::load(&tmp).await.unwrap();
+    let _ = std::fs::remove_file(&tmp);
+    let snap = svc.snapshot().await;
+    let registry = Arc::new(ProviderRegistry::from_configs(&snap.providers).unwrap());
+    let http = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+    let db = Db::open(&snap.database).unwrap();
+    let key_store = token_dealer::auth::KeyStore::new(
+        db.clone(),
+        &token_dealer::auth::MasterKey::from_env_or_generate().unwrap(),
+    );
+    let oauth = token_dealer::oauth::OAuthManager::new(db.clone(), key_store.clone(), http.clone());
+    let user_store = token_dealer::auth::UserStore::new(db.clone());
+    let pricing = token_dealer::cost::PricingStore::new(db.clone());
+    let pipeline = Pipeline::new(
+        registry,
+        svc.clone(),
+        http,
+        db.clone(),
+        HealthRegistry::new(),
+        key_store.clone(),
+        oauth.clone(),
+        user_store.clone(),
+        pricing.clone(),
+    );
+    AppState::new(
+        pipeline,
+        svc,
+        HealthRegistry::new(),
+        db,
+        token_dealer::metadata::MetadataStore::new(),
+        key_store,
+        oauth,
+        user_store,
+        pricing,
+        token_dealer::telemetry::Telemetry::init(),
+    )
+}
+
+#[tokio::test]
+async fn specificity_routing_overrides_tier_when_keywords_match() {
+    // Two providers: "tier" uses /v1/chat/completions and returns
+    // "tier-pick"; "specific" returns "specificity-pick". Coding
+    // keywords in the user message should route to "specific".
+    let tier_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "t", "object": "chat.completion", "created": 1,
+            "model": "tier-model",
+            "choices": [{"index": 0, "message": {"role":"assistant","content":"tier-pick"}, "finish_reason":"stop"}],
+            "usage": {"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}
+        })))
+        .mount(&tier_server)
+        .await;
+    let spec_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "s", "object": "chat.completion", "created": 1,
+            "model": "spec-model",
+            "choices": [{"index": 0, "message": {"role":"assistant","content":"specificity-pick"}, "finish_reason":"stop"}],
+            "usage": {"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}
+        })))
+        .mount(&spec_server)
+        .await;
+
+    let state = make_state_with_specificity(
+        &tier_server.uri(),
+        "tier",
+        SpecificityConfig {
+            enabled: true,
+            rules: vec![SpecificityRule {
+                category: SpecificityCategory::Coding,
+                primary: format!("specific/spec-model"),
+                threshold: None,
+            }],
+        },
+    )
+    .await;
+    // Add the "specific" provider both to the config snapshot (the
+    // pipeline reads keys from cfg.providers) and to the registry
+    // (the Selector looks up adapters there).
+    let mut snap = state.config.snapshot().await;
+    snap.providers.push(token_dealer::config::ProviderConfig {
+        id: "specific".to_string(),
+        provider_type: token_dealer::config::ProviderType::Generic,
+        key: Some("test-key".to_string()),
+        base_url: Some(spec_server.uri()),
+        default_model: Some("spec-model".to_string()),
+        path: None,
+    });
+    state
+        .config
+        .update_with(|cfg| {
+            for p in snap.providers.iter() {
+                if !cfg.providers.iter().any(|q| q.id == p.id) {
+                    cfg.providers.push(p.clone());
+                }
+            }
+        })
+        .await
+        .unwrap();
+    let registry = state.pipeline.registry.clone();
+    registry
+        .add(&token_dealer::config::ProviderConfig {
+            id: "specific".to_string(),
+            provider_type: token_dealer::config::ProviderType::Generic,
+            key: Some("test-key".to_string()),
+            base_url: Some(spec_server.uri()),
+            default_model: Some("spec-model".to_string()),
+            path: None,
+        })
+        .await
+        .unwrap();
+
+    let app = build_router(state);
+    let req = axum::http::Request::builder()
+        .method("POST")
+        .uri("/v1/chat/completions")
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(
+            json!({
+                "model": "tier/tier-model",
+                "messages": [{"role":"user","content":"please refactor this function and debug the syntax"}]
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    let status = resp.status();
+    let h = resp.headers().clone();
+    let body_bytes = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
+    let body: Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    // Coding keywords fire: should route to "specific"
+    assert_eq!(h.get("x-router-provider").unwrap(), "specific");
+    assert_eq!(h.get("x-router-specificity").unwrap(), "coding");
+    assert_eq!(
+        body["choices"][0]["message"]["content"],
+        "specificity-pick"
+    );
+}
+
+#[tokio::test]
+async fn specificity_disabled_falls_through_to_tier() {
+    let tier_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "t", "object": "chat.completion", "created": 1,
+            "model": "tier-model",
+            "choices": [{"index": 0, "message": {"role":"assistant","content":"tier-pick"}, "finish_reason":"stop"}],
+            "usage": {"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}
+        })))
+        .mount(&tier_server)
+        .await;
+
+    let state = make_state_with_specificity(
+        &tier_server.uri(),
+        "tier",
+        SpecificityConfig {
+            enabled: false, // disabled
+            rules: vec![SpecificityRule {
+                category: SpecificityCategory::Coding,
+                primary: "specific/spec-model".to_string(),
+                threshold: None,
+            }],
+        },
+    )
+    .await;
+
+    let app = build_router(state);
+    let req = axum::http::Request::builder()
+        .method("POST")
+        .uri("/v1/chat/completions")
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(
+            json!({
+                "model": "tier/tier-model",
+                "messages": [{"role":"user","content":"refactor this function and debug the syntax"}]
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    let status = resp.status();
+    let h = resp.headers().clone();
+    let body_bytes = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
+    let body: Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    assert_eq!(h.get("x-router-provider").unwrap(), "tier");
+    assert!(h.get("x-router-specificity").is_none());
+    assert_eq!(body["choices"][0]["message"]["content"], "tier-pick");
+}
+

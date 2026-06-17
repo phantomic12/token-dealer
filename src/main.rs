@@ -94,6 +94,30 @@ async fn main() -> anyhow::Result<()> {
     let user_store = token_dealer::auth::UserStore::new(db.clone());
     let pricing = token_dealer::cost::PricingStore::new(db.clone());
     let _ = pricing.seed_defaults().await;
+    // Spawn the OpenRouter pricing sync background task (daily by
+    // default; configurable via [pricing_sync] in token-dealer.toml).
+    token_dealer::cost::spawn_pricing_sync(
+        reqwest::Client::builder()
+            .user_agent(concat!("token-dealer/", env!("CARGO_PKG_VERSION")))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new()),
+        db.clone(),
+        snapshot.pricing_sync.clone(),
+    );
+    // Spawn the model discovery background task. Runs once on
+    // startup, populates the `provider_models` cache. Configurable
+    // via [discovery] in token-dealer.toml.
+    if snapshot.discovery.enabled {
+        token_dealer::discovery::spawn_discovery(
+            db.clone(),
+            registry.clone(),
+            reqwest::Client::builder()
+                .user_agent(concat!("token-dealer/", env!("CARGO_PKG_VERSION")))
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
+            key_store.clone(),
+        );
+    }
     let telemetry = token_dealer::telemetry::Telemetry::init();
     let pipeline = Pipeline::new(registry, config.clone(), http, db.clone(), health.clone(), key_store.clone(), oauth.clone(), user_store.clone(), pricing.clone());
     let state = AppState::new(pipeline, config, health, db, metadata, key_store, oauth, user_store, pricing, telemetry);

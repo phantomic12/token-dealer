@@ -1,6 +1,7 @@
 pub mod admin;
 pub mod auth;
 pub mod auth_endpoints;
+pub mod events;
 pub mod handlers;
 pub mod middleware;
 pub mod multimodal;

@@ -223,6 +223,202 @@ pub struct RetryConfig {
     pub request_budget_ms: u64,
 }
 
+/// Specificity categories. Detected from keywords + tool-name prefixes
+/// in the request, used to route to a per-category primary model instead
+/// of the tier's default primary. Mirrors `mnfst/manifest`'s 9-category
+/// specificity system.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpecificityCategory {
+    Coding,
+    WebBrowsing,
+    DataAnalysis,
+    ImageGeneration,
+    VideoGeneration,
+    SocialMedia,
+    EmailManagement,
+    CalendarManagement,
+    Trading,
+}
+
+impl SpecificityCategory {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SpecificityCategory::Coding => "coding",
+            SpecificityCategory::WebBrowsing => "web_browsing",
+            SpecificityCategory::DataAnalysis => "data_analysis",
+            SpecificityCategory::ImageGeneration => "image_generation",
+            SpecificityCategory::VideoGeneration => "video_generation",
+            SpecificityCategory::SocialMedia => "social_media",
+            SpecificityCategory::EmailManagement => "email_management",
+            SpecificityCategory::CalendarManagement => "calendar_management",
+            SpecificityCategory::Trading => "trading",
+        }
+    }
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "coding" => SpecificityCategory::Coding,
+            "web_browsing" | "web-browsing" | "browsing" => SpecificityCategory::WebBrowsing,
+            "data_analysis" | "data-analysis" | "analysis" => SpecificityCategory::DataAnalysis,
+            "image_generation" | "image-generation" | "image" => {
+                SpecificityCategory::ImageGeneration
+            }
+            "video_generation" | "video-generation" | "video" => SpecificityCategory::VideoGeneration,
+            "social_media" | "social-media" | "social" => SpecificityCategory::SocialMedia,
+            "email_management" | "email-management" | "email" => SpecificityCategory::EmailManagement,
+            "calendar_management" | "calendar-management" | "calendar" => {
+                SpecificityCategory::CalendarManagement
+            }
+            "trading" => SpecificityCategory::Trading,
+            _ => return None,
+        })
+    }
+    pub fn all() -> &'static [SpecificityCategory] {
+        &[
+            SpecificityCategory::Coding,
+            SpecificityCategory::WebBrowsing,
+            SpecificityCategory::DataAnalysis,
+            SpecificityCategory::ImageGeneration,
+            SpecificityCategory::VideoGeneration,
+            SpecificityCategory::SocialMedia,
+            SpecificityCategory::EmailManagement,
+            SpecificityCategory::CalendarManagement,
+            SpecificityCategory::Trading,
+        ]
+    }
+}
+
+impl std::fmt::Display for SpecificityCategory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl Default for SpecificityCategory {
+    fn default() -> Self {
+        SpecificityCategory::Coding
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SpecificityRule {
+    pub category: SpecificityCategory,
+    /// The model to route to when this category is detected. Same
+    /// `provider/model` syntax as tier primaries.
+    pub primary: String,
+    /// Optional activation threshold override (default per-category
+    /// values live in the detector module).
+    #[serde(default)]
+    pub threshold: Option<u32>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SpecificityConfig {
+    /// Master switch. When false, the detector is skipped entirely
+    /// and the tier scorer owns routing.
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub rules: Vec<SpecificityRule>,
+}
+
+/// Per-tier + per-day + per-user cost / token budgets. Enforced
+/// at request-time by the chat handler before dispatch. Returns
+/// 429 + OpenAI-shape error envelope when exceeded.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct BudgetConfig {
+    /// Max USD per calendar day (UTC) across all requests. 0 = unlimited.
+    #[serde(default)]
+    pub daily_cost_usd: f64,
+    /// Max USD per single request. 0 = unlimited.
+    #[serde(default)]
+    pub per_request_cost_usd: f64,
+    /// Soft warning at this fraction of the daily cap (default 0.8).
+    #[serde(default = "default_warn_fraction")]
+    pub warn_fraction: f64,
+}
+
+fn default_warn_fraction() -> f64 {
+    0.8
+}
+
+/// Pricing sync configuration. OpenRouter provides a free, no-auth
+/// JSON catalog of 300+ model prices that token-dealer ingests
+/// daily. Manual seeding of `model_prices` is still supported via
+/// `POST /admin/pricing`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PricingSyncConfig {
+    /// Master switch. When true, a background task refreshes the
+    /// `model_prices` table from OpenRouter at startup and every
+    /// `interval_hours`.
+    #[serde(default = "default_pricing_sync_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_pricing_sync_interval")]
+    pub interval_hours: u64,
+    /// OpenRouter API base URL. Override only for testing.
+    #[serde(default = "default_pricing_sync_url")]
+    pub openrouter_url: String,
+}
+
+fn default_pricing_sync_enabled() -> bool {
+    true
+}
+fn default_pricing_sync_interval() -> u64 {
+    24
+}
+fn default_pricing_sync_url() -> String {
+    "https://openrouter.ai/api/v1/models".to_string()
+}
+
+impl Default for PricingSyncConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_pricing_sync_enabled(),
+            interval_hours: default_pricing_sync_interval(),
+            openrouter_url: default_pricing_sync_url(),
+        }
+    }
+}
+
+/// Model discovery configuration. On startup (and via admin
+/// endpoint), token-dealer fetches `/v1/models` from each connected
+/// provider and caches the model list per provider in the
+/// `provider_models` table. The `/v1/models` endpoint and tier
+/// auto-assignment then use this list instead of relying on a
+/// single hard-coded `default_model`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiscoveryConfig {
+    #[serde(default = "default_discovery_enabled")]
+    pub enabled: bool,
+    /// If true, on startup auto-assign empty tier primaries from
+    /// the discovered model list using the cheapest-with-quality
+    /// heuristic. Existing manual primaries are never overwritten.
+    #[serde(default)]
+    pub auto_assign_tiers: bool,
+    /// Models cheaper than this USD/1M input are excluded from
+    /// auto-assignment (cheap models tend to be low quality — we
+    /// refuse to silently downgrade a user's tier).
+    #[serde(default = "default_min_input_price")]
+    pub min_input_price_per_1m: f64,
+}
+
+fn default_discovery_enabled() -> bool {
+    true
+}
+fn default_min_input_price() -> f64 {
+    0.10
+}
+
+impl Default for DiscoveryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_discovery_enabled(),
+            auto_assign_tiers: false,
+            min_input_price_per_1m: default_min_input_price(),
+        }
+    }
+}
+
 fn default_max_retries() -> u32 {
     1
 }
@@ -291,6 +487,23 @@ pub struct RouterConfig {
     pub retry: RetryConfig,
     #[serde(default)]
     pub streaming: StreamingConfig,
+    /// Specificity routing. When enabled, the request is classified
+    /// into one of 9 task categories (coding, web_browsing, etc.)
+    /// and routed to a per-category primary model. Falls through to
+    /// tier routing when no category activates.
+    #[serde(default)]
+    pub specificity: SpecificityConfig,
+    /// Cost / token budgets enforced at request-time.
+    #[serde(default)]
+    pub budgets: BudgetConfig,
+    /// OpenRouter pricing sync. Background task that ingests the
+    /// 300+ model price catalog daily.
+    #[serde(default)]
+    pub pricing_sync: PricingSyncConfig,
+    /// Model discovery. On startup, fetch `/v1/models` from each
+    /// connected provider and cache the model list per provider.
+    #[serde(default)]
+    pub discovery: DiscoveryConfig,
     /// SQLite log retention in days. 0 = forever (default).
     #[serde(default)]
     pub log_retention_days: u32,

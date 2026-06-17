@@ -237,3 +237,55 @@ request_budget_ms = 120000
 
 [streaming]
 buffer_threshold_tokens = 2048
+
+# ── Specificity routing ─────────────────────────────────────────────────
+# Detects the *type* of task in each request (coding, web_browsing,
+# data_analysis, image_generation, video_generation, social_media,
+# email_management, calendar_management, trading) and routes to a
+# per-category primary model instead of the tier's default. Inspired
+# by mnfst/manifest's specificity system. Disabled by default.
+#
+# [specificity]
+# enabled = true
+# rules = [
+#   { category = "coding",            primary = "anthropic/claude-sonnet-4-5" },
+#   { category = "data_analysis",    primary = "anthropic/claude-opus-4-5"   },
+#   { category = "image_generation",  primary = "openai/gpt-image-1"          },
+# ]
+#
+# Override the per-category default threshold (weighted keyword
+# matches + tool-name prefixes required to fire). Default thresholds
+# are tuned conservatively to avoid false positives.
+# { category = "coding", primary = "x/y", threshold = 3 }
+#
+# Per-request override header:
+#   X-Router-Specificity: coding
+
+# ── Cost budgets ────────────────────────────────────────────────────────
+# Hard caps enforced before each request. 0 = unlimited. Returns
+# HTTP 429 with `error.code = budget_exceeded` when a cap is hit.
+#
+# [budgets]
+# daily_cost_usd      = 50.0    # total spend across the day (UTC)
+# per_request_cost_usd = 1.0    # max USD per single request
+# warn_fraction       = 0.8     # soft-warning threshold fraction
+
+# ── OpenRouter pricing sync ─────────────────────────────────────────────
+# Free, no-auth JSON catalog of 300+ model prices at
+# https://openrouter.ai/api/v1/models. Background task refreshes
+# the `model_prices` table on startup + every `interval_hours`.
+#
+# [pricing_sync]
+# enabled        = true
+# interval_hours = 24
+# openrouter_url  = "https://openrouter.ai/api/v1/models"
+
+# ── Model discovery ─────────────────────────────────────────────────────
+# On startup, fetch `/v1/models` from each connected provider and
+# cache the model list in the `provider_models` table. Powers the
+# `/v1/models` listing + tier auto-assignment.
+#
+# [discovery]
+# enabled                  = true
+# auto_assign_tiers        = false   # auto-fill empty tier primaries from discovered models
+# min_input_price_per_1m   = 0.10    # skip ultra-cheap (likely low-quality) models

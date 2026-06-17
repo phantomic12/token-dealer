@@ -5,9 +5,14 @@ High-performance LLM routing proxy in Rust. Sits between clients and providers, 
 - **OpenAI-compatible** on the public side — drop-in for any client/SDK
 - **Multi-provider** — Anthropic, OpenAI, plus a generic OpenAI-compatible fallback (Together, Groq, Ollama, vLLM, ...)
 - **Tier-based routing** — `simple` / `standard` / `complex` / `reasoning` / `high_context` / `multimodal`, per-tier primary + fallback list
+- **Specificity routing** — 9 task categories (coding, web_browsing, data_analysis, image_gen, video_gen, social_media, email_mgmt, calendar_mgmt, trading) detected via keywords + tool-name prefixes. Override with `X-Router-Specificity: <category>`.
 - **Two path lengths** — pick by `model: "provider/model"` to bypass tier routing, or by `X-Router-Tier: <tier>` header
 - **SSE streaming** with OpenAI-shape chunks + `data: [DONE]` terminator
-- **X-Router-\* response headers** — `x-router-provider`, `x-router-model`, `x-router-tier`, `x-router-request-id`
+- **X-Router-\* response headers** — `x-router-provider`, `x-router-model`, `x-router-tier`, `x-router-specificity`, `x-router-request-id`
+- **OpenRouter pricing sync** — daily background task ingests the 300+ model price catalog
+- **Model discovery** — fetches `/v1/models` from each provider on startup, populates `/v1/models` + tier auto-assignment
+- **Cost budgets** — per-day + per-request USD caps with soft-warning + 429 hard-stop
+- **SSE event stream** — `/api/v1/events` emits `request.completed` + `budget.warning` + `pricing.synced` events for live UIs
 
 ## Auth
 
@@ -154,20 +159,23 @@ This is the MVP. What works:
 - `/admin/config/reload` (re-reads TOML on the fly)
 - Tier-based routing via `model: "tier"` or `X-Router-Tier` header
 - Direct routing via `model: "provider/model"`
-- Anthropic + OpenAI adapters
-- Generic OpenAI-compatible adapter (non-streaming only)
+- Specificity routing via `X-Router-Specificity` header or auto-detection
+- 28 provider adapters (Anthropic, OpenAI, Google, Kiro, Responses, Generic, ...)
 - X-Router-\* response headers + request IDs
+- SQLite request log + cost tracking + per-user/per-day spend
+- Multi-user auth (argon2) + API key issuance + per-key spend tracking
+- OAuth popup flow (Anthropic, ChatGPT Codex) + device_code flow (MiniMax M2)
+- OpenRouter pricing sync (daily) + model discovery (startup)
+- Cost budgets (per-day, per-request) with soft-warning + 429 hard-stop
+- HTMX WebUI (Dashboard, Providers, Tiers, Rules, Logs, Pricing, Users, Account)
+- SSE event stream for live UI updates
 - Multi-arch container (linux/amd64, linux/arm64) pushed to GHCR
 
 What's next (phase 2):
-- Heuristic scorer (token count, tools, image detection → tier)
-- User-defined detection rules engine
-- Fallback chains + circuit breaker
-- Streaming for the generic adapter
-- SQLite-backed request log + cost tracking
-- models.dev sync for capability/cost metadata
-- Inbound API-key auth
-- Admin UI
+- Heuristic scorer refinements (tool-aware tier floors)
+- Per-agent routing rules (multi-tenant)
+- Wingman-style dev drawer
+- /v1/messages (Anthropic) + /v1/responses (OpenAI Responses API) pass-throughs
 
 ## License
 
