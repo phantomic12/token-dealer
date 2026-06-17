@@ -473,6 +473,19 @@ pub async fn validate_provider_type(Json(body): Json<serde_json::Value>) -> Resp
     }
 }
 
+/// DEBUG: dump the providers list as the config sees it.
+pub async fn debug_providers(State(state): State<AppState>) -> Response {
+    let snap = state.config.snapshot().await;
+    let mut s = String::from("snapshot providers:\n");
+    for p in &snap.providers {
+        s.push_str(&format!(
+            "  - id={} type={:?} default_model={:?} key_present={}\n",
+            p.id, p.provider_type, p.default_model, p.key.is_some()
+        ));
+    }
+    (StatusCode::OK, s).into_response()
+}
+
 /// Test a provider config without persisting it. POST /admin/providers/test
 /// with a JSON body matching ProviderConfig. The server builds a transient
 /// adapter, hits the cheapest possible endpoint (GET /v1/models for
