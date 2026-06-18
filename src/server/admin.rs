@@ -222,30 +222,53 @@ pub async fn set_oauth_refresh(
 /// Start a popup_oauth flow. POST /admin/oauth/:provider_id/start
 /// with optional `{"redirect_uri": "..."}`. Returns the authorize
 /// URL the user should visit.
+///
+/// GET on the same path also works: returns a 302 redirect straight
+/// to the provider's authorize URL so the user can just click a
+/// link in chat / email / the docs and land on the consent screen
+/// without first having to fetch a JSON response.
 pub async fn start_oauth(
     State(state): State<AppState>,
     axum::extract::Path(provider_id): axum::extract::Path<String>,
-    Json(body): Json<serde_json::Value>,
+    headers: axum::http::HeaderMap,
+    body: Option<Json<serde_json::Value>>,
 ) -> Response {
     // The config stores a full callback URL like
     // `http://host:port/admin/oauth/openai/callback`. Reconstruct it
     // for whichever provider the caller asked for so all four
     // providers don't share one redirect URI.
     let snap = state.config.snapshot().await;
+    let config_redirect = snap.server.oauth_redirect_uri.clone();
     let explicit_redirect = body
-        .get("redirect_uri")
+        .as_ref()
+        .and_then(|Json(b)| b.get("redirect_uri"))
         .and_then(|v| v.as_str())
         .map(String::from);
-    let config_redirect = snap.server.oauth_redirect_uri.clone();
-    let redirect_uri = explicit_redirect.unwrap_or_else(|| {
-        rebuild_redirect_uri(&config_redirect, &provider_id)
-    });
+    let redirect_uri =
+        explicit_redirect.unwrap_or_else(|| rebuild_redirect_uri(&config_redirect, &provider_id));
     match state.oauth.start_popup_oauth(&provider_id, &redirect_uri).await {
-        Ok((url, state)) => (
-            StatusCode::OK,
-            Json(json!({"authorize_url": url, "state": state})),
-        )
-            .into_response(),
+        Ok((url, _state)) => {
+            // GET: redirect the browser straight to the consent
+            // page. POST: return the URL as JSON so JS can open it
+            // in a popup.
+            let is_get = headers
+                .get(axum::http::method::Method::GET.as_str())
+                .is_some()
+                || !headers
+                    .keys()
+                    .any(|k| k.as_str().eq_ignore_ascii_case("content-type"));
+            // Use the actual request method instead — axum maps
+            // GET to `body: None` and POST to `body: Some(_)` above.
+            if body.is_none() {
+                axum::response::Redirect::to(&url).into_response()
+            } else {
+                (
+                    StatusCode::OK,
+                    Json(json!({"authorize_url": url, "state": "ok"})),
+                )
+                    .into_response()
+            }
+        }
         Err(e) => (
             StatusCode::BAD_REQUEST,
             Json(json!({"error": format!("start_oauth failed: {e}")})),

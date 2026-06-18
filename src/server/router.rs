@@ -60,7 +60,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/admin/rules/:index", post(delete_rule).delete(delete_rule))
         .route("/admin/keys/:provider_id", post(set_key).delete(delete_key))
         .route("/admin/oauth/:provider_id/refresh", post(set_oauth_refresh))
-        .route("/admin/oauth/:provider_id/start", post(start_oauth))
+        .route("/admin/oauth/:provider_id/start", get(start_oauth).post(start_oauth))
         .route("/admin/oauth/:provider_id/callback", get(oauth_callback))
         .route("/admin/oauth/:provider_id/paste", post(paste_anthropic_code))
         .route("/admin/oauth/:provider_id/device/start", post(start_device_oauth))
