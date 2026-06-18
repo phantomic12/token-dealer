@@ -684,6 +684,34 @@ pub async fn start_device_flow(
             })
             .or_else(|| v.get("expired_in").and_then(|x| x.as_u64().map(|s| s / 1000)));
             (uc.clone(), uc, vu, iv, ei)
+        } else if cfg.device_code_url.contains("amazonaws.com") {
+            // Kiro / AWS SSO OIDC: camelCase keys (deviceCode,
+            // userCode, verificationUri, expiresIn, interval).
+            let dc = v
+                .get("deviceCode")
+                .and_then(|x| x.as_str())
+                .ok_or_else(|| {
+                    anyhow::anyhow!("device_code response missing deviceCode")
+                })?
+                .to_string();
+            let uc = v
+                .get("userCode")
+                .and_then(|x| x.as_str())
+                .ok_or_else(|| {
+                    anyhow::anyhow!("device_code response missing userCode")
+                })?
+                .to_string();
+            let vu = v
+                .get("verificationUriComplete")
+                .or_else(|| v.get("verificationUri"))
+                .and_then(|x| x.as_str())
+                .ok_or_else(|| {
+                    anyhow::anyhow!("device_code response missing verificationUri")
+                })?
+                .to_string();
+            let iv = v.get("interval").and_then(|x| x.as_u64());
+            let ei = v.get("expiresIn").and_then(|x| x.as_u64());
+            (dc, uc, vu, iv, ei)
         } else {
             let dc = v.get("device_code").and_then(|x| x.as_str())
                 .ok_or_else(|| anyhow::anyhow!("device_code response missing device_code"))?
