@@ -599,47 +599,53 @@ pub async fn start_device_flow(
     // otherwise).
     let verifier = generate_pkce_verifier();
     let challenge = pkce_challenge_s256(&verifier);
-    // For Kiro we must use the dynamically-registered client_id +
-    // client_secret on the device_authorization and token-exchange
-    // calls. GitHub Copilot + MiniMax don't take a client_secret.
-    let mut form = if let Some(ref cs) = effective_client_secret {
-        format!(
-            "client_id={}&client_secret={}&scope={}",
-            urlencoding(&effective_client_id),
-            urlencoding(cs),
-            urlencoding(&scope),
-        )
+    // The request shape varies per provider family:
+    //   - Kiro/AWS SSO OIDC: JSON body with the dynamically-registered
+    //     client_id + client_secret + startUrl.
+    //   - Standard OAuth2 device_code with PKCE (MiniMax):
+    //     form-urlencoded with code_challenge.
+    //   - Standard OAuth2 device_code without PKCE (GitHub Copilot):
+    //     form-urlencoded with just client_id + scope.
+    let resp = if let Some(cs) = &effective_client_secret {
+        // Kiro path: AWS SSO OIDC expects a JSON body with
+        // clientId, clientSecret, and startUrl.
+        let body = serde_json::json!({
+            "clientId": effective_client_id,
+            "clientSecret": cs,
+            "startUrl": "https://view.awsapps.com/start",
+        });
+        self.http
+            .post(cfg.device_code_url)
+            .header("content-type", "application/json")
+            .header("accept", "application/json")
+            .json(&body)
+            .send()
+            .await?
     } else {
-        format!(
+        let mut form = format!(
             "client_id={}&scope={}&code_challenge={}&code_challenge_method=S256",
             urlencoding(&effective_client_id),
             urlencoding(&scope),
             urlencoding(&challenge),
-        )
-    };
-    // GitHub Copilot doesn't need PKCE on device code request;
-    // MiniMax requires it. The manifest flag guides us.
-    if !cfg.device_response_camelcase && effective_client_secret.is_none() {
-        // Standard providers (no client_secret) — keep PKCE only
-        // for MiniMax.
-        if cfg.device_code_url.contains("minimax") {
-            // already has PKCE
-        } else {
+        );
+        // MiniMax requires PKCE; GitHub Copilot doesn't need it.
+        // Manifest flag guides us. Standard providers without
+        // client_secret fall back to client_id + scope only.
+        if !cfg.device_response_camelcase {
             form = format!(
                 "client_id={}&scope={}",
                 urlencoding(&effective_client_id),
                 urlencoding(&scope),
             );
         }
-    }
-    let resp = self
-        .http
-        .post(cfg.device_code_url)
-        .header("content-type", "application/x-www-form-urlencoded")
-        .header("accept", "application/json")
-        .body(form)
-        .send()
-        .await?;
+        self.http
+            .post(cfg.device_code_url)
+            .header("content-type", "application/x-www-form-urlencoded")
+            .header("accept", "application/json")
+            .body(form)
+            .send()
+            .await?
+    };
     if !resp.status().is_success() {
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
