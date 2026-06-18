@@ -227,12 +227,19 @@ pub async fn start_oauth(
     axum::extract::Path(provider_id): axum::extract::Path<String>,
     Json(body): Json<serde_json::Value>,
 ) -> Response {
+    // The config stores a full callback URL like
+    // `http://host:port/admin/oauth/openai/callback`. Reconstruct it
+    // for whichever provider the caller asked for so all four
+    // providers don't share one redirect URI.
     let snap = state.config.snapshot().await;
-    let redirect_uri = body
+    let explicit_redirect = body
         .get("redirect_uri")
         .and_then(|v| v.as_str())
-        .map(String::from)
-        .unwrap_or_else(|| snap.server.oauth_redirect_uri.clone());
+        .map(String::from);
+    let config_redirect = snap.server.oauth_redirect_uri.clone();
+    let redirect_uri = explicit_redirect.unwrap_or_else(|| {
+        rebuild_redirect_uri(&config_redirect, &provider_id)
+    });
     match state.oauth.start_popup_oauth(&provider_id, &redirect_uri).await {
         Ok((url, state)) => (
             StatusCode::OK,
@@ -247,6 +254,33 @@ pub async fn start_oauth(
     }
 }
 
+/// Rebuild `oauth_redirect_uri` for the given provider.
+///
+/// Accepts three shapes:
+///   1. Full URL ending in `/admin/oauth/<provider>/callback` →
+///      swap the `<provider>` segment. (Legacy shape that the
+///      starter `token-dealer.toml.example` ships.)
+///   2. Bare origin like `http://host:port` → append
+///      `/admin/oauth/<provider>/callback`.
+///   3. Already-correct URL → return as-is.
+pub(crate) fn rebuild_redirect_uri(configured: &str, provider_id: &str) -> String {
+    if configured.is_empty() {
+        return format!("/admin/oauth/{provider_id}/callback");
+    }
+    if configured.contains("/admin/oauth/") {
+        // Shape 1: re-write the provider segment.
+        if let Some((prefix, _suffix)) = configured.rsplit_once("/admin/oauth/") {
+            return format!("{prefix}/admin/oauth/{provider_id}/callback");
+        }
+    }
+    if configured.ends_with("/callback") || configured.ends_with("/") {
+        let trimmed = configured.trim_end_matches('/');
+        return format!("{trimmed}/admin/oauth/{provider_id}/callback");
+    }
+    // Shape 2: bare origin.
+    format!("{configured}/admin/oauth/{provider_id}/callback")
+}
+
 /// OAuth callback. GET /admin/oauth/:provider_id/callback?code=...&state=...
 /// Exchanges the code for tokens, stores the refresh_token, then
 /// redirects to the UI with a flash message.
@@ -258,7 +292,7 @@ pub async fn oauth_callback(
     let code = params.get("code").cloned().unwrap_or_default();
     let oauth_state = params.get("state").cloned().unwrap_or_default();
     let snap = state.config.snapshot().await;
-    let redirect_uri = snap.server.oauth_redirect_uri.clone();
+    let redirect_uri = rebuild_redirect_uri(&snap.server.oauth_redirect_uri, &provider_id);
     match state
         .oauth
         .complete_popup_oauth(&provider_id, &code, &oauth_state, &redirect_uri)

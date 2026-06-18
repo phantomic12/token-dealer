@@ -83,7 +83,19 @@ pub struct OAuthManager {
     /// device_code string; value is the provider_id it was
     /// issued for.
     devices: Arc<RwLock<HashMap<String, String>>>,
+    /// Dynamically-registered OAuth client credentials for device
+    /// flows (currently only Kiro/AWS SSO OIDC). Keyed by the
+    /// device_code; the value is the `client_id` + `client_secret`
+    /// returned by `/client/register`. Required for the subsequent
+    /// token-exchange poll AND for future refresh requests.
+    device_clients: Arc<RwLock<HashMap<String, DeviceClientCreds>>>,
     http: reqwest::Client,
+}
+
+#[derive(Debug, Clone)]
+struct DeviceClientCreds {
+    client_id: String,
+    client_secret: String,
 }
 
 impl OAuthManager {
@@ -96,6 +108,7 @@ impl OAuthManager {
             states: Arc::new(RwLock::new(HashMap::new())),
             pkce_verifiers: Arc::new(RwLock::new(HashMap::new())),
             devices: Arc::new(RwLock::new(HashMap::new())),
+            device_clients: Arc::new(RwLock::new(HashMap::new())),
             http,
         }
     }
@@ -206,7 +219,7 @@ impl OAuthManager {
                     })
                 })
             });
-        let refresh_token = self
+        let raw = self
             .key_store
             .get(&format!("oauth:{provider_id}"))
             .await
@@ -216,26 +229,41 @@ impl OAuthManager {
             Some(c) => c,
             None => return Ok(None),
         };
-        let refresh_token = match refresh_token {
+        let raw = match raw {
             Some(t) => t,
             None => return Ok(None),
         };
-        let mut body = serde_json::json!({
-            "grant_type": "refresh_token",
-            "refresh_token": refresh_token,
-            "client_id": cfg.client_id,
-        });
-        if let Some(secret) = &cfg.client_secret {
-            body["client_secret"] = json!(secret);
+        // The stored blob may be:
+        //   1. A bare refresh_token (legacy paste-code flow,
+        //      Anthropic short codes, or any provider that doesn't
+        //      need client_id at refresh time).
+        //   2. A JSON blob `{refresh_token, client_id, client_secret}`
+        //      when the flow registered a dynamic client (Kiro/AWS
+        //      SSO OIDC). The pair must accompany refresh requests
+        //      or the SSO server returns `invalid_client`.
+        let (refresh_token, registered_client_id, registered_client_secret) =
+            parse_stored_refresh(&raw);
+        let poll_client_id = registered_client_id
+            .clone()
+            .unwrap_or_else(|| cfg.client_id.clone());
+        let poll_client_secret = registered_client_secret.clone().or(cfg.client_secret.clone());
+        let mut form: Vec<(String, String)> = vec![
+            ("grant_type".to_string(), "refresh_token".to_string()),
+            ("refresh_token".to_string(), refresh_token.clone()),
+            ("client_id".to_string(), poll_client_id),
+        ];
+        if let Some(secret) = &poll_client_secret {
+            form.push(("client_secret".to_string(), secret.clone()));
         }
         for (k, v) in &cfg.extra {
-            body[k] = json!(v);
+            form.push((k.clone(), v.clone()));
         }
 
         let resp = self
             .http
             .post(&cfg.token_url)
-            .json(&body)
+            .header("content-type", "application/x-www-form-urlencoded")
+            .form(&form)
             .send()
             .await?;
         if !resp.status().is_success() {
@@ -275,8 +303,15 @@ impl OAuthManager {
             .await
             .insert(provider_id.to_string(), creds.clone());
         if let Some(rt) = new_refresh {
+            // Re-store with the same shape as before so subsequent
+            // refreshes can still find the registered client_id.
+            let next = serialize_stored_refresh(
+                &rt,
+                registered_client_id.as_deref(),
+                registered_client_secret.as_deref(),
+            );
             self.key_store
-                .set(&format!("oauth:{provider_id}"), &rt)
+                .set(&format!("oauth:{provider_id}"), &next)
                 .await?;
         }
         Ok(Some(new_access))
@@ -421,24 +456,29 @@ pub async fn complete_popup_oauth(
         cfg.redirect_uri.to_string()
     };
 
-    let mut body = serde_json::json!({
-        "grant_type": "authorization_code",
-        "code": code,
-        "redirect_uri": effective_redirect,
-        "client_id": cfg.client_id,
-    });
+    // Build form-encoded body. Most OAuth2 providers (Google,
+    // OpenAI, GitHub Copilot, xAI) reject JSON bodies on the token
+    // endpoint and require application/x-www-form-urlencoded.
+    // We send form-urlencoded universally.
+    let mut form: Vec<(String, String)> = vec![
+        ("grant_type".to_string(), "authorization_code".to_string()),
+        ("code".to_string(), code.to_string()),
+        ("redirect_uri".to_string(), effective_redirect.clone()),
+        ("client_id".to_string(), cfg.client_id.to_string()),
+    ];
     if let Some(v) = verifier {
-        body["code_verifier"] = serde_json::Value::String(v);
+        form.push(("code_verifier".to_string(), v));
     }
     let client_secret = resolve_client_secret(provider_id, cfg.client_secret);
     if !client_secret.is_empty() {
-        body["client_secret"] = serde_json::Value::String(client_secret);
+        form.push(("client_secret".to_string(), client_secret));
     }
 
     let resp = self
         .http
         .post(cfg.token_url)
-        .json(&body)
+        .header("content-type", "application/x-www-form-urlencoded")
+        .form(&form)
         .send()
         .await?;
     if !resp.status().is_success() {
@@ -475,6 +515,67 @@ pub async fn start_device_flow(
     } else {
         cfg.scope.to_string()
     };
+
+    // Kiro uses AWS SSO OIDC's three-step flow: a public client_id
+    // (`kiro-cli`) is just a placeholder; the real client_id and
+    // client_secret are obtained dynamically by registering a fresh
+    // public client at the start of every flow. We must persist them
+    // alongside the tokens because the same pair is needed to
+    // refresh the access_token later (the SSO token endpoint rejects
+    // refresh requests without them).
+    //
+    // Detect by checking if `device_code_url` points at an AWS SSO
+    // OIDC endpoint (`*.amazonaws.com`). For all other device_code
+    // providers (GitHub, MiniMax) the static `client_id` is fine.
+    let (effective_client_id, effective_client_secret) = if cfg
+        .device_code_url
+        .contains("amazonaws.com")
+    {
+        let register_url = cfg
+            .device_code_url
+            .trim_end_matches("/deviceAuthorization")
+            .trim_end_matches("/device_authorization")
+            .to_string()
+            + "/client/register";
+        let reg_body = format!(
+            "client_name={}&client_type=public&grant_types=device_code+refresh_token&scopes={}",
+            urlencoding("token-dealer"),
+            urlencoding(&scope),
+        );
+        let reg_resp = self
+            .http
+            .post(&register_url)
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(reg_body)
+            .send()
+            .await?;
+        if !reg_resp.status().is_success() {
+            let status = reg_resp.status();
+            let text = reg_resp.text().await.unwrap_or_default();
+            anyhow::bail!(
+                "{provider_id} registerClient failed: {} {}: {}",
+                status.as_u16(),
+                status.canonical_reason().unwrap_or(""),
+                text
+            );
+        }
+        let v: serde_json::Value = reg_resp.json().await?;
+        let cid = v
+            .get("client_id")
+            .and_then(|x| x.as_str())
+            .ok_or_else(|| {
+                anyhow::anyhow!("{provider_id} registerClient: missing client_id")
+            })?
+            .to_string();
+        let cs = v
+            .get("client_secret")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string();
+        (cid, Some(cs))
+    } else {
+        (cfg.client_id.to_string(), None)
+    };
     // All device-code providers (GitHub, Kiro, MiniMax) accept
     // application/x-www-form-urlencoded — use that instead of JSON.
     // MiniMax also requires a PKCE code_challenge even on the
@@ -482,25 +583,38 @@ pub async fn start_device_flow(
     // otherwise).
     let verifier = generate_pkce_verifier();
     let challenge = pkce_challenge_s256(&verifier);
-    let mut form = format!(
-        "client_id={}&scope={}&code_challenge={}&code_challenge_method=S256",
-        urlencoding(&cfg.client_id),
-        urlencoding(&scope),
-        urlencoding(&challenge),
-    );
-    // GitHub Copilot + Kiro don't need PKCE on device code request;
-    // MiniMax requires it. The manifest flag guides us.
-    if !cfg.device_response_camelcase {
-        // Remove the PKCE params for standard providers that don't
-        // expect them (they're harmless to send, but some servers
-        // reject unknown params). GitHub Copilot accepts them but
-        // also works without — prefer matching the upstream
-        // spec exactly.
-        form = format!(
-            "client_id={}&scope={}",
-            urlencoding(&cfg.client_id),
+    // For Kiro we must use the dynamically-registered client_id +
+    // client_secret on the device_authorization and token-exchange
+    // calls. GitHub Copilot + MiniMax don't take a client_secret.
+    let mut form = if let Some(ref cs) = effective_client_secret {
+        format!(
+            "client_id={}&client_secret={}&scope={}",
+            urlencoding(&effective_client_id),
+            urlencoding(cs),
             urlencoding(&scope),
-        );
+        )
+    } else {
+        format!(
+            "client_id={}&scope={}&code_challenge={}&code_challenge_method=S256",
+            urlencoding(&effective_client_id),
+            urlencoding(&scope),
+            urlencoding(&challenge),
+        )
+    };
+    // GitHub Copilot doesn't need PKCE on device code request;
+    // MiniMax requires it. The manifest flag guides us.
+    if !cfg.device_response_camelcase && effective_client_secret.is_none() {
+        // Standard providers (no client_secret) — keep PKCE only
+        // for MiniMax.
+        if cfg.device_code_url.contains("minimax") {
+            // already has PKCE
+        } else {
+            form = format!(
+                "client_id={}&scope={}",
+                urlencoding(&effective_client_id),
+                urlencoding(&scope),
+            );
+        }
     }
     let resp = self
         .http
@@ -587,6 +701,19 @@ pub async fn start_device_flow(
             .await
             .insert(device_code.clone(), verifier);
     }
+    // Persist the dynamically-registered client credentials (Kiro)
+    // so the token-exchange poll can send them. The token endpoint
+    // validates the pair; without client_secret the SSO server
+    // returns `invalid_client`.
+    if let Some(cs) = effective_client_secret {
+        self.device_clients.write().await.insert(
+            device_code.clone(),
+            DeviceClientCreds {
+                client_id: effective_client_id,
+                client_secret: cs,
+            },
+        );
+    }
 
     Ok(DeviceFlowInfo {
         device_code,
@@ -629,19 +756,37 @@ pub async fn poll_device_flow(
     } else {
         None
     };
+    // Kiro (and any other AWS-SSO-OIDC-backed provider) needs the
+    // dynamically-registered client_id + client_secret on the
+    // token-exchange call. We pull them out of the device_clients
+    // map (populated during start_device_flow).
+    let registered = self.device_clients.read().await.get(device_code).cloned();
+    let poll_client_id = registered
+        .as_ref()
+        .map(|c| c.client_id.clone())
+        .unwrap_or_else(|| cfg.client_id.to_string());
+    let poll_client_secret = registered.as_ref().map(|c| c.client_secret.clone());
     let form = if is_minimax {
         format!(
             "grant_type={}&client_id={}&code_verifier={}",
             urlencoding(grant_type),
-            urlencoding(&cfg.client_id),
+            urlencoding(&poll_client_id),
             urlencoding(&verifier.unwrap_or_default()),
+        )
+    } else if let Some(cs) = poll_client_secret {
+        format!(
+            "grant_type={}&device_code={}&client_id={}&client_secret={}",
+            urlencoding(grant_type),
+            urlencoding(device_code),
+            urlencoding(&poll_client_id),
+            urlencoding(&cs),
         )
     } else {
         format!(
             "grant_type={}&device_code={}&client_id={}",
             urlencoding(grant_type),
             urlencoding(device_code),
-            urlencoding(&cfg.client_id),
+            urlencoding(&poll_client_id),
         )
     };
     let resp = self
@@ -660,9 +805,20 @@ pub async fn poll_device_flow(
             .and_then(|x| x.as_str())
             .ok_or_else(|| anyhow::anyhow!("token response missing refresh_token"))?
             .to_string();
-        self.set_refresh_token(&provider_id, &new_refresh).await?;
-        // Clean up the device_code entry
+        // Persist the refresh_token. If this was a Kiro flow we
+        // dynamically registered a client; bundle the
+        // client_id+client_secret so the next refresh can authenticate.
+        let (reg_cid, reg_cs) = match &registered {
+            Some(c) => (Some(c.client_id.clone()), Some(c.client_secret.clone())),
+            None => (None, None),
+        };
+        let blob = serialize_stored_refresh(&new_refresh, reg_cid.as_deref(), reg_cs.as_deref());
+        self.key_store
+            .set(&format!("oauth:{provider_id}"), &blob)
+            .await?;
+        // Clean up the device_code entry + registered client creds
         self.devices.write().await.remove(device_code);
+        self.device_clients.write().await.remove(device_code);
         return Ok(true);
     }
 
@@ -676,6 +832,7 @@ pub async fn poll_device_flow(
         "slow_down" => Ok(false), // client should slow down
         "expired_token" | "access_denied" => {
             self.devices.write().await.remove(device_code);
+            self.device_clients.write().await.remove(device_code);
             anyhow::bail!("device_code rejected: {}", err);
         }
         _ => anyhow::bail!("device_code poll failed: {} {}: {}", status.as_u16(), err, body),
@@ -740,6 +897,44 @@ fn urlencoding(s: &str) -> String {
         }
     }
     out
+}
+
+/// Decode the stored refresh-token blob. Bare refresh tokens are
+/// kept as-is (legacy / paste-only flows). JSON blobs from flows
+/// that registered a dynamic client (Kiro/AWS SSO OIDC) carry the
+/// `client_id` + `client_secret` alongside the refresh_token so
+/// subsequent refreshes can authenticate.
+fn parse_stored_refresh(
+    raw: &str,
+) -> (String, Option<String>, Option<String>) {
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(raw) {
+        if let Some(rt) = v.get("refresh_token").and_then(|x| x.as_str()) {
+            let cid = v.get("client_id").and_then(|x| x.as_str()).map(String::from);
+            let cs = v.get("client_secret").and_then(|x| x.as_str()).map(String::from);
+            return (rt.to_string(), cid, cs);
+        }
+    }
+    (raw.to_string(), None, None)
+}
+
+/// Serialize a refresh-token blob for storage. Includes the
+/// registered client_id/secret when they were captured at flow
+/// time; otherwise just the bare refresh_token.
+fn serialize_stored_refresh(
+    rt: &str,
+    registered_client_id: Option<&str>,
+    registered_client_secret: Option<&str>,
+) -> String {
+    if let (Some(cid), Some(cs)) = (registered_client_id, registered_client_secret) {
+        serde_json::json!({
+            "refresh_token": rt,
+            "client_id": cid,
+            "client_secret": cs,
+        })
+        .to_string()
+    } else {
+        rt.to_string()
+    }
 }
 
 // ─── PKCE helpers (RFC 7636) ────────────────────────────────────────────
@@ -811,7 +1006,7 @@ pub async fn paste_anthropic_code(
     &self,
     provider_id: &str,
     pasted: &str,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<String> {
     let cfg = lookup_manifest_oauth(provider_id)
         .ok_or_else(|| anyhow::anyhow!("provider {} has no OAuth config", provider_id))?;
     if !cfg.is_anthropic_paste_code {
@@ -821,23 +1016,63 @@ pub async fn paste_anthropic_code(
         );
     }
     let trimmed = pasted.trim();
-    // The format is `<code>#<state>`. Split on the last `#`.
-    let (code, _state) = match trimmed.rsplit_once('#') {
-        Some((c, s)) => (c.trim(), s.trim()),
-        None => {
-            // Some users paste just the code. Accept that.
-            (trimmed, "")
-        }
+    // Anthropic's redirect page renders `<code>#<state>` where
+    // `state` IS the PKCE verifier (clever: state == code_verifier).
+    // Split on the last `#` so user codes that contain an extra `#`
+    // (rare but happens) still parse.
+    let (code, state) = match trimmed.rsplit_once('#') {
+        Some((c, s)) => (c.trim().to_string(), s.trim().to_string()),
+        // Fall back: treat the entire input as the code, with no
+        // verifier. Anthropic's exchange will fail with `invalid_grant`
+        // if a verifier is required and wasn't sent — caller can
+        // re-paste.
+        None => (trimmed.to_string(), String::new()),
     };
     if code.is_empty() {
         anyhow::bail!("pasted code is empty");
     }
-    // Anthropic uses long-lived codes (~1y) — store as the
-    // refresh token directly. The refresh path will detect the
-    // format and try to refresh; if the server rejects, the
-    // user re-runs the paste flow.
-    self.set_refresh_token(provider_id, code).await?;
-    Ok(())
+
+    // Real authorization_code exchange. Anthropic's token endpoint
+    // is `api.anthropic.com/v1/oauth/token` and accepts standard
+    // OAuth2 form-urlencoded with PKCE.
+    let mut body = serde_json::json!({
+        "grant_type": "authorization_code",
+        "code": code,
+        "client_id": cfg.client_id,
+        "redirect_uri": cfg.paste_code_redirect_url,
+    });
+    if !state.is_empty() {
+        body["code_verifier"] = serde_json::Value::String(state);
+    }
+    let resp = self
+        .http
+        .post(cfg.token_url)
+        .header("content-type", "application/x-www-form-urlencoded")
+        .form(&body)
+        .send()
+        .await?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        anyhow::bail!(
+            "Anthropic token exchange failed: {} {}: {}",
+            status.as_u16(),
+            status.canonical_reason().unwrap_or(""),
+            text.chars().take(300).collect::<String>()
+        );
+    }
+    let v: serde_json::Value = resp.json().await?;
+    let refresh_token = v
+        .get("refresh_token")
+        .and_then(|x| x.as_str())
+        .ok_or_else(|| {
+            anyhow::anyhow!("Anthropic exchange returned no refresh_token. \
+                            The code may be expired or already used. \
+                            Re-run the paste flow.")
+        })?
+        .to_string();
+    self.set_refresh_token(provider_id, &refresh_token).await?;
+    Ok(refresh_token)
 }
 }
 
@@ -992,6 +1227,85 @@ mod popup_url_tests {
         let cfg = lookup_manifest_oauth("kiro").expect("kiro manifest");
         assert!(cfg.device_code_url.contains("kiro.dev/deviceAuthorization"));
         assert!(!cfg.requires_pkce);
+    }
+
+    #[test]
+    fn parse_stored_refresh_handles_bare_and_blob() {
+        // Bare refresh token — legacy / paste-only providers.
+        let (rt, cid, cs) = parse_stored_refresh("rt-abc-123");
+        assert_eq!(rt, "rt-abc-123");
+        assert_eq!(cid, None);
+        assert_eq!(cs, None);
+
+        // JSON blob — Kiro / AWS SSO OIDC, registered client.
+        let (rt2, cid2, cs2) = parse_stored_refresh(
+            r#"{"refresh_token":"rt-xyz","client_id":"cid","client_secret":"cs"}"#,
+        );
+        assert_eq!(rt2, "rt-xyz");
+        assert_eq!(cid2.as_deref(), Some("cid"));
+        assert_eq!(cs2.as_deref(), Some("cs"));
+
+        // Missing fields fall back to None.
+        let (rt3, cid3, cs3) = parse_stored_refresh(r#"{"refresh_token":"rt-only"}"#);
+        assert_eq!(rt3, "rt-only");
+        assert_eq!(cid3, None);
+        assert_eq!(cs3, None);
+
+        // Round-trip.
+        let s = serialize_stored_refresh("rt-rt", Some("cid"), Some("cs"));
+        let (rt4, cid4, cs4) = parse_stored_refresh(&s);
+        assert_eq!(rt4, "rt-rt");
+        assert_eq!(cid4.as_deref(), Some("cid"));
+        assert_eq!(cs4.as_deref(), Some("cs"));
+
+        // Bare serialize stays bare.
+        let bare = serialize_stored_refresh("rt-bare", None, None);
+        assert_eq!(bare, "rt-bare");
+    }
+
+    #[test]
+    fn popup_url_uses_correct_redirect_uri_per_provider() {
+        // Inlined test of the redirect-URI rebuilder. Mirrors the
+        // server-side helper so we can unit-test the behavior
+        // without crossing module boundaries.
+        fn rebuild(configured: &str, provider_id: &str) -> String {
+            if configured.is_empty() {
+                return format!("/admin/oauth/{provider_id}/callback");
+            }
+            if configured.contains("/admin/oauth/") {
+                if let Some((prefix, _suffix)) = configured.rsplit_once("/admin/oauth/") {
+                    return format!("{prefix}/admin/oauth/{provider_id}/callback");
+                }
+            }
+            if configured.ends_with("/callback") || configured.ends_with("/") {
+                let trimmed = configured.trim_end_matches('/');
+                return format!("{trimmed}/admin/oauth/{provider_id}/callback");
+            }
+            format!("{configured}/admin/oauth/{provider_id}/callback")
+        }
+        // Legacy single-config redirect URI is a per-provider URL
+        // like `http://host:port/admin/oauth/openai/callback`. Each
+        // provider's authorize URL should reference its own
+        // callback, not always `openai`.
+        let cfg = rebuild(
+            "http://example.com:8080/admin/oauth/openai/callback",
+            "github-copilot",
+        );
+        assert!(
+            cfg.contains("/admin/oauth/github-copilot/callback"),
+            "expected per-provider callback, got {cfg}"
+        );
+
+        // Bare origin also works.
+        let cfg2 = rebuild("http://example.com:8080", "xai");
+        assert!(
+            cfg2.contains("/admin/oauth/xai/callback"),
+            "expected appended callback, got {cfg2}"
+        );
+
+        // Empty config returns a path-only fallback (dev mode).
+        let cfg3 = rebuild("", "minimax");
+        assert!(cfg3.contains("/admin/oauth/minimax/callback"));
     }
 
     #[test]

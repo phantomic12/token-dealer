@@ -442,8 +442,8 @@ pub fn lookup(pt: ProviderType) -> Option<ManifestProvider> {
             // flows, flagged by `device_response_camelcase`.
             oauth: Some(ManifestOAuth {
                 authorize_url: "",
-                token_url: "https://api.minimax.io/oauth/token",
-                device_code_url: "https://api.minimax.io/oauth/code",
+                token_url: "https://account.minimax.io/oauth2/token",
+                device_code_url: "https://account.minimax.io/oauth2/device/code",
                 paste_code_redirect_url: "",
                 client_id: "78257093-7e40-4613-99e0-527b14b39113",
                 client_secret: "",
