@@ -653,6 +653,7 @@ pub async fn start_device_flow(
             status.as_u16(), status.canonical_reason().unwrap_or(""), text);
     }
     let v: serde_json::Value = resp.json().await?;
+    tracing::debug!("device_code response body: {v}");
 
     // MiniMax returns a completely different response shape:
     //   { base_resp: { status_code:0 },
