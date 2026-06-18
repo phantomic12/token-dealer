@@ -1276,7 +1276,7 @@ mod popup_url_tests {
     #[test]
     fn kiro_device_code_marker() {
         let cfg = lookup_manifest_oauth("kiro").expect("kiro manifest");
-        assert!(cfg.device_code_url.contains("kiro.dev/deviceAuthorization"));
+        assert!(cfg.device_code_url.contains("amazonaws.com/device_authorization"));
         assert!(!cfg.requires_pkce);
     }
 
@@ -1392,10 +1392,10 @@ mod popup_url_tests {
         // Kiro uses dynamic registration — the literal "kiro-cli" is
         // intentional, the real id comes from the OIDC register step.
         let kiro = lookup_manifest_oauth("kiro").expect("kiro manifest");
-        assert_eq!(kiro.client_id, "kiro-cli");
+        assert_eq!(kiro.client_id, "Manifest");
         assert_eq!(
             kiro.device_code_url,
-            "https://prod.us-east-1.auth.desktop.kiro.dev/deviceAuthorization"
+            "https://oidc.us-east-1.amazonaws.com/device_authorization"
         );
     }
 }

@@ -205,21 +205,20 @@ pub fn lookup(pt: ProviderType) -> Option<ManifestProvider> {
             path: "/",
             requires_key: true,
             local_only: false,
-            // Kiro uses an OIDC device-code flow against the AWS IAM Identity
-            // Center endpoint, with a register-client step that issues a
-            // dynamic client_id+secret. The grant type for both
-            // authorize-poll and token-exchange is
-            // `urn:ietf:params:oauth:grant-type:device_code`.
+            // Kiro (AWS CodeWhisperer / Amazon Q Developer) uses the
+            // AWS SSO OIDC three-step device flow against
+            // `oidc.<region>.amazonaws.com`. The register-client call
+            // requires `clientName: "Manifest"` (the only string the
+            // SSO server accepts without rejecting with
+            // `invalid_client_metadata`). The token-exchange call uses
+            // a JSON body with the registered client_id+secret.
             oauth: Some(ManifestOAuth {
                 authorize_url: "",
-                token_url:
-                    "https://prod.us-east-1.auth.desktop.kiro.dev/oauth/token",
+                token_url: "https://oidc.us-east-1.amazonaws.com/token",
                 device_code_url:
-                    "https://prod.us-east-1.auth.desktop.kiro.dev/deviceAuthorization",
+                    "https://oidc.us-east-1.amazonaws.com/device_authorization",
                 paste_code_redirect_url: "",
-                // Kiro registers dynamically — we override the
-                // device-flow start with a register-client POST.
-                client_id: "kiro-cli",
+                client_id: "Manifest", // the registered public client name
                 client_secret: "",
                 scope: "codewhisperer:completions codewhisperer:conversations",
                 redirect_uri: "",
