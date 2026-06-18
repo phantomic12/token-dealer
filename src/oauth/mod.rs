@@ -1358,6 +1358,9 @@ mod popup_url_tests {
             if configured.is_empty() {
                 return format!("/admin/oauth/{provider_id}/callback");
             }
+            if configured.contains("{provider}") {
+                return configured.replace("{provider}", provider_id);
+            }
             if configured.contains("/admin/oauth/") {
                 if let Some((prefix, _suffix)) = configured.rsplit_once("/admin/oauth/") {
                     return format!("{prefix}/admin/oauth/{provider_id}/callback");
@@ -1382,16 +1385,27 @@ mod popup_url_tests {
             "expected per-provider callback, got {cfg}"
         );
 
+        // New `{provider}` placeholder shape (the one the README
+        // example uses). Substitute with the actual provider name.
+        let cfg2 = rebuild(
+            "http://example.com:8080/admin/oauth/{provider}/callback",
+            "gemini",
+        );
+        assert_eq!(
+            cfg2,
+            "http://example.com:8080/admin/oauth/gemini/callback"
+        );
+
         // Bare origin also works.
-        let cfg2 = rebuild("http://example.com:8080", "xai");
+        let cfg3 = rebuild("http://example.com:8080", "xai");
         assert!(
-            cfg2.contains("/admin/oauth/xai/callback"),
-            "expected appended callback, got {cfg2}"
+            cfg3.contains("/admin/oauth/xai/callback"),
+            "expected appended callback, got {cfg3}"
         );
 
         // Empty config returns a path-only fallback (dev mode).
-        let cfg3 = rebuild("", "minimax");
-        assert!(cfg3.contains("/admin/oauth/minimax/callback"));
+        let cfg4 = rebuild("", "minimax");
+        assert!(cfg4.contains("/admin/oauth/minimax/callback"));
     }
 
     #[test]

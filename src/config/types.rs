@@ -465,6 +465,12 @@ impl Default for StreamingConfig {
 pub struct RouterConfig {
     #[serde(default)]
     pub server: ServerConfig,
+    /// Legacy alias for `server.oauth_redirect_uri`. Older configs
+    /// (and the example shipped with the README) put the redirect
+    /// URI at the top level. Accept both shapes; the top-level one
+    /// wins when set.
+    #[serde(default)]
+    pub oauth_redirect_uri: Option<String>,
     #[serde(default)]
     pub auth: AuthConfig,
     #[serde(default)]

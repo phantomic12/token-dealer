@@ -238,7 +238,12 @@ pub async fn start_oauth(
     // for whichever provider the caller asked for so all four
     // providers don't share one redirect URI.
     let snap = state.config.snapshot().await;
-    let config_redirect = snap.server.oauth_redirect_uri.clone();
+    let top_level = snap.oauth_redirect_uri.clone().unwrap_or_default();
+    let config_redirect = if !snap.server.oauth_redirect_uri.is_empty() {
+        snap.server.oauth_redirect_uri.clone()
+    } else {
+        top_level
+    };
     let explicit_redirect = body
         .as_ref()
         .and_then(|Json(b)| b.get("redirect_uri"))
@@ -279,19 +284,28 @@ pub async fn start_oauth(
 
 /// Rebuild `oauth_redirect_uri` for the given provider.
 ///
-/// Accepts three shapes:
-///   1. Full URL ending in `/admin/oauth/<provider>/callback` →
-///      swap the `<provider>` segment. (Legacy shape that the
-///      starter `token-dealer.toml.example` ships.)
-///   2. Bare origin like `http://host:port` → append
+/// Accepts these shapes:
+///   1. Bare origin like `http://host:port` → append
 ///      `/admin/oauth/<provider>/callback`.
-///   3. Already-correct URL → return as-is.
+///   2. Full URL with `{provider}` placeholder:
+///      `http://host:port/admin/oauth/{provider}/callback` →
+///      substitute the provider segment. (Most user-friendly
+///      shape — survives renaming providers without config edits.)
+///   3. Full URL ending in `/admin/oauth/<provider>/callback` →
+///      swap the `<provider>` segment if it doesn't match.
+///      (Legacy shape that the starter
+///      `token-dealer.toml.example` ships.)
 pub(crate) fn rebuild_redirect_uri(configured: &str, provider_id: &str) -> String {
     if configured.is_empty() {
         return format!("/admin/oauth/{provider_id}/callback");
     }
+    // Shape 2: literal `{provider}` template. Substitute then
+    // return as a full URL (no further rewriting needed).
+    if configured.contains("{provider}") {
+        return configured.replace("{provider}", provider_id);
+    }
     if configured.contains("/admin/oauth/") {
-        // Shape 1: re-write the provider segment.
+        // Shape 3: re-write the provider segment.
         if let Some((prefix, _suffix)) = configured.rsplit_once("/admin/oauth/") {
             return format!("{prefix}/admin/oauth/{provider_id}/callback");
         }
@@ -300,7 +314,7 @@ pub(crate) fn rebuild_redirect_uri(configured: &str, provider_id: &str) -> Strin
         let trimmed = configured.trim_end_matches('/');
         return format!("{trimmed}/admin/oauth/{provider_id}/callback");
     }
-    // Shape 2: bare origin.
+    // Shape 1: bare origin.
     format!("{configured}/admin/oauth/{provider_id}/callback")
 }
 
@@ -315,7 +329,13 @@ pub async fn oauth_callback(
     let code = params.get("code").cloned().unwrap_or_default();
     let oauth_state = params.get("state").cloned().unwrap_or_default();
     let snap = state.config.snapshot().await;
-    let redirect_uri = rebuild_redirect_uri(&snap.server.oauth_redirect_uri, &provider_id);
+    let top_level = snap.oauth_redirect_uri.clone().unwrap_or_default();
+    let config_redirect = if !snap.server.oauth_redirect_uri.is_empty() {
+        snap.server.oauth_redirect_uri.clone()
+    } else {
+        top_level
+    };
+    let redirect_uri = rebuild_redirect_uri(&config_redirect, &provider_id);
     match state
         .oauth
         .complete_popup_oauth(&provider_id, &code, &oauth_state, &redirect_uri)
