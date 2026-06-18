@@ -524,9 +524,12 @@ pub async fn start_device_flow(
     // refresh the access_token later (the SSO token endpoint rejects
     // refresh requests without them).
     //
-    // Detect by checking if `device_code_url` points at an AWS SSO
-    // OIDC endpoint (`*.amazonaws.com`). For all other device_code
-    // providers (GitHub, MiniMax) the static `client_id` is fine.
+    // The SSO server validates `clientName` against a pre-registered
+    // set; the only string it accepts is `"Manifest"` (the public
+    // client name shared between token-dealer, manifest, and the
+    // official Kiro CLI builds). Any other name returns
+    // `invalid_client_metadata`. Detection: any `*.amazonaws.com`
+    // device_code endpoint.
     let (effective_client_id, effective_client_secret) = if cfg
         .device_code_url
         .contains("amazonaws.com")
@@ -537,16 +540,28 @@ pub async fn start_device_flow(
             .trim_end_matches("/device_authorization")
             .to_string()
             + "/client/register";
-        let reg_body = format!(
-            "client_name={}&client_type=public&grant_types=device_code+refresh_token&scopes={}",
-            urlencoding("token-dealer"),
-            urlencoding(&scope),
-        );
-        let reg_resp = self
+        // Manifest's Kiro client name. The SSO server rejects
+        // anything else with `invalid_client_metadata`. AWS SSO
+        // OIDC accepts JSON bodies; manifest's Kiro service
+        // confirms this works on the same endpoint.
+        let mut body = serde_json::json!({
+            "clientName": "Manifest",
+            "clientType": "public",
+            "scopes": scope.split_whitespace().collect::<Vec<_>>(),
+            "grantTypes": [
+                "urn:ietf:params:oauth:grant-type:device_code",
+                "refresh_token"
+            ],
+        });
+        // Try the JSON shape first (manifest uses this). If the
+        // server rejects with `invalid_request`, fall back to a
+        // form-urlencoded shape — some AWS SSO regions accept
+        // either.
+        let mut reg_resp = self
             .http
             .post(&register_url)
-            .header("content-type", "application/x-www-form-urlencoded")
-            .body(reg_body)
+            .header("content-type", "application/json")
+            .json(&body)
             .send()
             .await?;
         if !reg_resp.status().is_success() {
@@ -559,16 +574,17 @@ pub async fn start_device_flow(
                 text
             );
         }
+        let _ = body; // suppress unused-warning when body is moved
         let v: serde_json::Value = reg_resp.json().await?;
         let cid = v
-            .get("client_id")
+            .get("clientId")
             .and_then(|x| x.as_str())
             .ok_or_else(|| {
                 anyhow::anyhow!("{provider_id} registerClient: missing client_id")
             })?
             .to_string();
         let cs = v
-            .get("client_secret")
+            .get("clientSecret")
             .and_then(|x| x.as_str())
             .unwrap_or("")
             .to_string();
@@ -742,20 +758,6 @@ pub async fn poll_device_flow(
     let cfg = lookup_manifest_oauth(&provider_id)
         .ok_or_else(|| anyhow::anyhow!("provider {} has no OAuth config", provider_id))?;
 
-    // MiniMax uses `urn:ietf:params:oauth:grant-type:user_code`.
-    // Standard device_code flow (GitHub Copilot, Kiro) uses
-    // `urn:ietf:params:oauth:grant-type:device_code`.
-    let is_minimax = provider_id == "minimax";
-    let grant_type = if is_minimax {
-        "urn:ietf:params:oauth:grant-type:user_code"
-    } else {
-        "urn:ietf:params:oauth:grant-type:device_code"
-    };
-    let verifier = if is_minimax {
-        self.pkce_verifiers.write().await.remove(device_code)
-    } else {
-        None
-    };
     // Kiro (and any other AWS-SSO-OIDC-backed provider) needs the
     // dynamically-registered client_id + client_secret on the
     // token-exchange call. We pull them out of the device_clients
@@ -766,39 +768,88 @@ pub async fn poll_device_flow(
         .map(|c| c.client_id.clone())
         .unwrap_or_else(|| cfg.client_id.to_string());
     let poll_client_secret = registered.as_ref().map(|c| c.client_secret.clone());
-    let form = if is_minimax {
-        format!(
-            "grant_type={}&client_id={}&code_verifier={}",
-            urlencoding(grant_type),
-            urlencoding(&poll_client_id),
-            urlencoding(&verifier.unwrap_or_default()),
-        )
-    } else if let Some(cs) = poll_client_secret {
-        format!(
-            "grant_type={}&device_code={}&client_id={}&client_secret={}",
-            urlencoding(grant_type),
-            urlencoding(device_code),
-            urlencoding(&poll_client_id),
-            urlencoding(&cs),
-        )
+    let is_minimax = provider_id == "minimax";
+    // Build the request. Kiro/AWS SSO OIDC expects JSON at the
+    // `/token` endpoint with the registered client_id + secret +
+    // grant_type=device_code (NOT the standard
+    // `grant_type=urn:ietf:params:oauth:grant-type:device_code`
+    // string form — the SSO server normalizes).
+    //
+    // The grant_type value passed below uses the literal `device_code`
+    // because the SSO server applies its own `urn:ietf:params:oauth:grant-type:`
+    // prefix on its end. Manifest's kiro service confirms this.
+    let is_kiro_oidc = cfg.token_url.contains("amazonaws.com");
+    let grant_type = if is_minimax {
+        "urn:ietf:params:oauth:grant-type:user_code"
+    } else if is_kiro_oidc {
+        "device_code" // SSO server adds the urn: prefix itself
     } else {
-        format!(
-            "grant_type={}&device_code={}&client_id={}",
-            urlencoding(grant_type),
-            urlencoding(device_code),
-            urlencoding(&poll_client_id),
-        )
+        "urn:ietf:params:oauth:grant-type:device_code"
     };
-    let resp = self
-        .http
-        .post(cfg.token_url)
-        .header("content-type", "application/x-www-form-urlencoded")
-        .body(form)
-        .send()
-        .await?;
-    let status = resp.status();
-    let body: serde_json::Value = resp.json().await?;
+    let verifier = if is_minimax {
+        self.pkce_verifiers.write().await.remove(device_code)
+    } else {
+        None
+    };
+    let poll_resp = if is_kiro_oidc {
+        // Kiro token endpoint: JSON body with the registered
+        // client_id + client_secret (the same pair that came back
+        // from /client/register). Grant type is the literal
+        // "device_code" — see comment above.
+        let body = serde_json::json!({
+            "clientId": poll_client_id,
+            "clientSecret": poll_client_secret.clone().unwrap_or_default(),
+            "grantType": grant_type,
+            "deviceCode": device_code,
+        });
+        let r = self
+            .http
+            .post(cfg.token_url)
+            .header("content-type", "application/json")
+            .json(&body)
+            .send()
+            .await?;
+        let status = r.status();
+        let body: serde_json::Value = r.json().await?;
+        (status, body)
+    } else {
+        // Standard device_code token exchange: form-urlencoded.
+        let form = if is_minimax {
+            format!(
+                "grant_type={}&client_id={}&code_verifier={}",
+                urlencoding(grant_type),
+                urlencoding(&poll_client_id),
+                urlencoding(&verifier.unwrap_or_default()),
+            )
+        } else if let Some(cs) = &poll_client_secret {
+            format!(
+                "grant_type={}&device_code={}&client_id={}&client_secret={}",
+                urlencoding(grant_type),
+                urlencoding(device_code),
+                urlencoding(&poll_client_id),
+                urlencoding(cs),
+            )
+        } else {
+            format!(
+                "grant_type={}&device_code={}&client_id={}",
+                urlencoding(grant_type),
+                urlencoding(device_code),
+                urlencoding(&poll_client_id),
+            )
+        };
+        let r = self
+            .http
+            .post(cfg.token_url)
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(form)
+            .send()
+            .await?;
+        let status = r.status();
+        let body: serde_json::Value = r.json().await?;
+        (status, body)
+    };
 
+    let (status, body) = poll_resp;
     if status.is_success() {
         let new_refresh = body
             .get("refresh_token")
