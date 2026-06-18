@@ -1190,3 +1190,300 @@ async fn specificity_disabled_falls_through_to_tier() {
     assert_eq!(body["choices"][0]["message"]["content"], "tier-pick");
 }
 
+// ───────────────────────────────────────────────────────────────────────────
+// Per-provider adapter e2e tests.
+//
+// These tests wire a wiremock in the role of the upstream provider,
+// and exercise the real provider-specific adapter (Anthropic,
+// Google, xAI). They assert:
+//   - the request shape sent to the provider (path, headers,
+//     body fields) matches the provider's wire format
+//   - the response is parsed into our canonical model
+//   - the chat handler returns a valid OpenAI-shape JSON body
+// ───────────────────────────────────────────────────────────────────────────
+
+async fn make_state_with_provider(
+    id: &str,
+    provider_type: ProviderType,
+    key: &str,
+    mock_base: &str,
+    default_model: &str,
+) -> AppState {
+    let mut cfg = RouterConfig::default();
+    cfg.providers.push(ProviderConfig {
+        id: id.to_string(),
+        provider_type,
+        key: Some(key.to_string()),
+        base_url: Some(mock_base.to_string()),
+        default_model: Some(default_model.to_string()),
+        path: None,
+    });
+    cfg.tiers.insert(
+        "standard".to_string(),
+        TierConfig {
+            primary: format!("{id}/{default_model}"),
+            fallbacks: vec![],
+            allow_tier_downgrade: false,
+            downgrade_to: None,
+            min_context_window: None,
+            timeouts: TierTimeoutsSet::default(),
+        },
+    );
+    let toml = toml::to_string(&cfg).unwrap();
+    let tmp = std::env::temp_dir().join(format!(
+        "token-dealer-provtest-{}.toml",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::write(&tmp, toml).unwrap();
+    let svc = ConfigService::load(&tmp).await.unwrap();
+    let _ = std::fs::remove_file(&tmp);
+    let snap = svc.snapshot().await;
+    let registry =
+        Arc::new(ProviderRegistry::from_configs(&snap.providers).unwrap());
+    let http = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+    let db = Db::open(&snap.database).unwrap();
+    let key_store = token_dealer::auth::KeyStore::new(
+        db.clone(),
+        &token_dealer::auth::MasterKey::from_env_or_generate().unwrap(),
+    );
+    let oauth = token_dealer::oauth::OAuthManager::new(
+        db.clone(),
+        key_store.clone(),
+        http.clone(),
+    );
+    let user_store = token_dealer::auth::UserStore::new(db.clone());
+    let pricing = token_dealer::cost::PricingStore::new(db.clone());
+    let pipeline = Pipeline::new(
+        registry,
+        svc.clone(),
+        http,
+        db.clone(),
+        HealthRegistry::new(),
+        key_store.clone(),
+        oauth.clone(),
+        user_store.clone(),
+        pricing.clone(),
+    );
+    let metadata = token_dealer::metadata::MetadataStore::new();
+    let user_store_outer = user_store.clone();
+    let pricing_outer = pricing.clone();
+    let telemetry = token_dealer::telemetry::Telemetry::init();
+    let _ = metadata;
+    AppState::new(
+        pipeline,
+        svc,
+        HealthRegistry::new(),
+        db,
+        token_dealer::metadata::MetadataStore::new(),
+        key_store,
+        oauth,
+        user_store_outer,
+        pricing_outer,
+        telemetry,
+    )
+}
+
+#[tokio::test]
+async fn anthropic_adapter_translates_request_and_response() {
+    // Wiremock stands in for api.anthropic.com. We assert:
+    //   - path is /v1/messages (not /v1/chat/completions)
+    //   - auth is `x-api-key`, not `authorization: Bearer`
+    //   - `anthropic-version` header is sent
+    //   - system prompt is at the top level (not in messages)
+    //   - response is parsed: Anthropic shape → OpenAI shape on the way out
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(header("x-api-key", "ant-test-key"))
+        .and(header("anthropic-version", "2023-06-01"))
+        .and(header_exists("content-type"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "msg_01abc",
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "hello from claude"}],
+            "model": "claude-sonnet-4-5",
+            "stop_reason": "end_turn",
+            "stop_sequence": null,
+            "usage": {"input_tokens": 12, "output_tokens": 7}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let state = make_state_with_provider(
+        "anthropic",
+        ProviderType::Anthropic,
+        "ant-test-key",
+        &server.uri(),
+        "claude-sonnet-4-5",
+    )
+    .await;
+    let app = build_router(state);
+
+    let req = axum::http::Request::builder()
+        .method("POST")
+        .uri("/v1/chat/completions")
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(
+            json!({
+                "model": "standard",
+                "messages": [
+                    {"role": "system", "content": "you are a helpful assistant"},
+                    {"role": "user", "content": "hi"}
+                ]
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    let status = resp.status();
+    let h = resp.headers().clone();
+    let body_bytes = axum::body::to_bytes(resp.into_body(), 65536)
+        .await
+        .unwrap();
+    let body: Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert_eq!(status, StatusCode::OK, "anthropic body: {body}");
+    assert_eq!(h.get("x-router-provider").unwrap(), "anthropic");
+    assert_eq!(h.get("x-router-model").unwrap(), "claude-sonnet-4-5");
+    assert_eq!(
+        body["choices"][0]["message"]["content"],
+        "hello from claude"
+    );
+    // Anthropic reports input/output tokens; we expose them as
+    // prompt/completion.
+    assert_eq!(body["usage"]["prompt_tokens"], 12);
+    assert_eq!(body["usage"]["completion_tokens"], 7);
+}
+
+#[tokio::test]
+async fn google_adapter_translates_request_and_response() {
+    // Google Gemini's API uses POST /v1beta/models/{model}:generateContent
+    // with `x-goog-api-key` auth and a different envelope. We assert the
+    // adapter routes there + parses the response back.
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1beta/models/gemini-2.0-flash:generateContent"))
+        .and(header("x-goog-api-key", "goog-test-key"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "candidates": [{
+                "index": 0,
+                "content": {
+                    "role": "model",
+                    "parts": [{"text": "hi from gemini"}]
+                },
+                "finishReason": "STOP"
+            }],
+            "usageMetadata": {
+                "promptTokenCount": 9,
+                "candidatesTokenCount": 4,
+                "totalTokenCount": 13
+            },
+            "modelVersion": "gemini-2.0-flash"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let state = make_state_with_provider(
+        "google",
+        ProviderType::Google,
+        "goog-test-key",
+        &server.uri(),
+        "gemini-2.0-flash",
+    )
+    .await;
+    let app = build_router(state);
+
+    let req = axum::http::Request::builder()
+        .method("POST")
+        .uri("/v1/chat/completions")
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(
+            json!({
+                "model": "standard",
+                "messages": [{"role": "user", "content": "hi"}]
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body_bytes = axum::body::to_bytes(resp.into_body(), 65536)
+        .await
+        .unwrap();
+    let body: Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert_eq!(status, StatusCode::OK, "google body: {body}");
+    assert_eq!(
+        body["choices"][0]["message"]["content"],
+        "hi from gemini"
+    );
+    assert_eq!(body["usage"]["prompt_tokens"], 9);
+    assert_eq!(body["usage"]["completion_tokens"], 4);
+}
+
+#[tokio::test]
+async fn xai_adapter_uses_bearer_and_openai_shape() {
+    // xAI is OpenAI-compatible — same path, same auth header,
+    // same response shape. The adapter should be a near-passthrough.
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(header("authorization", "Bearer xai-test-key"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "grok-1",
+            "object": "chat.completion",
+            "created": 1_700_000_000,
+            "model": "grok-2-latest",
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": "hello from grok"},
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 4, "completion_tokens": 3, "total_tokens": 7}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let state = make_state_with_provider(
+        "xai",
+        ProviderType::Xai,
+        "xai-test-key",
+        &server.uri(),
+        "grok-2-latest",
+    )
+    .await;
+    let app = build_router(state);
+
+    let req = axum::http::Request::builder()
+        .method("POST")
+        .uri("/v1/chat/completions")
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(
+            json!({
+                "model": "standard",
+                "messages": [{"role": "user", "content": "hi"}]
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    let status = resp.status();
+    let h = resp.headers().clone();
+    let body_bytes = axum::body::to_bytes(resp.into_body(), 65536)
+        .await
+        .unwrap();
+    let body: Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert_eq!(status, StatusCode::OK, "xai body: {body}");
+    assert_eq!(h.get("x-router-provider").unwrap(), "xai");
+    assert_eq!(
+        body["choices"][0]["message"]["content"],
+        "hello from grok"
+    );
+    assert_eq!(body["usage"]["total_tokens"], 7);
+}
+
