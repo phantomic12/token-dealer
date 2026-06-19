@@ -729,17 +729,30 @@ fn urlenc(s: &str) -> String {
 }
 
 fn random_token(len: usize) -> String {
+    // RFC 7636 §4.1: 43–128 chars, URL-safe [A-Z][a-z][0-9]-._~.
+    // The full byte range of those chars (printable ASCII) is
+    // ~94; a length-`len` ASCII token from the same alphabet is
+    // URL-safe without further encoding. Using String::from_utf8
+    // on the raw RNG output avoids the lossiness of from_utf8_lossy
+    // which would emit U+FFFD replacement chars that double-encode
+    // to %EF%BF%BD inside urlenc().
+    const ALPHABET: &[u8] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
     let mut buf = vec![0u8; len];
     rand::Rng::fill(&mut rand::thread_rng(), &mut buf[..]);
-    urlenc(&String::from_utf8_lossy(&buf))
+    buf.iter()
+        .map(|b| ALPHABET[(*b as usize) % ALPHABET.len()] as char)
+        .collect()
 }
 
 fn pkce_s256(verifier: &str) -> String {
+    use base64::Engine;
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
     h.update(verifier.as_bytes());
     let digest = h.finalize();
-    urlenc(&String::from_utf8_lossy(&digest))
+    // RFC 7636 §4.2: base64url WITHOUT padding.
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest)
 }
 
 fn open_browser(url: &str) -> anyhow::Result<()> {
