@@ -990,7 +990,7 @@ fn urlencoding(s: &str) -> String {
 /// that registered a dynamic client (Kiro/AWS SSO OIDC) carry the
 /// `client_id` + `client_secret` alongside the refresh_token so
 /// subsequent refreshes can authenticate.
-fn parse_stored_refresh(
+pub(crate) fn parse_stored_refresh(
     raw: &str,
 ) -> (String, Option<String>, Option<String>) {
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(raw) {
@@ -1006,7 +1006,7 @@ fn parse_stored_refresh(
 /// Serialize a refresh-token blob for storage. Includes the
 /// registered client_id/secret when they were captured at flow
 /// time; otherwise just the bare refresh_token.
-fn serialize_stored_refresh(
+pub(crate) fn serialize_stored_refresh(
     rt: &str,
     registered_client_id: Option<&str>,
     registered_client_secret: Option<&str>,

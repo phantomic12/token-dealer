@@ -14,8 +14,9 @@ use super::AppState;
 use super::admin::{
     add_provider, add_rule, delete_key, delete_rule, list_pricing, list_provider_models,
     list_provider_types, oauth_callback, paste_anthropic_code, poll_device_oauth,
-    remove_provider, save_config, set_key, set_oauth_refresh, start_device_oauth, start_oauth,
-    sync_pricing_now, test_provider, update_tier, validate_provider_type,
+    remove_provider, save_config, set_key, set_oauth_refresh, setup_oauth_via_cli,
+    start_device_oauth, start_oauth, sync_pricing_now, test_provider, update_tier,
+    validate_provider_type,
 };
 use super::auth_endpoints;
 use super::ui_login as login_pages;
@@ -63,6 +64,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/admin/oauth/:provider_id/start", get(start_oauth).post(start_oauth))
         .route("/admin/oauth/:provider_id/callback", get(oauth_callback))
         .route("/admin/oauth/:provider_id/paste", post(paste_anthropic_code))
+        .route("/admin/oauth/:provider_id/setup", post(setup_oauth_via_cli))
         .route("/admin/oauth/:provider_id/device/start", post(start_device_oauth))
         .route("/admin/oauth/device/poll", post(poll_device_oauth))
         .route("/admin/pricing", get(list_pricing))

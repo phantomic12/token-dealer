@@ -11,6 +11,10 @@ repository = "https://github.com/phantomic12/token-dealer"
 name = "token-dealer"
 path = "src/main.rs"
 
+[[bin]]
+name = "token-dealer-login"
+path = "src/bin/login.rs"
+
 [lib]
 name = "token_dealer"
 path = "src/lib.rs"
@@ -81,9 +85,17 @@ tiktoken-rs = "0.7"
 # Database (bundled SQLite — no system libsqlite3 needed)
 rusqlite = { version = "0.32", features = ["bundled"] }
 
+# OAuth loopback CLI (token-dealer-login)
+ureq = { version = "2.10", features = ["json"] }
+url = "2.5"
+
 [dev-dependencies]
 wiremock = "0.6"
 tokio = { version = "1.40", features = ["full"] }
+ureq = { version = "2.10", features = ["json"] }
+url = "2.5"
+rand = "0.8"
+sha2 = "0.10"
 
 [profile.release]
 opt-level = 3

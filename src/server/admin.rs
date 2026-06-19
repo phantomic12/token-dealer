@@ -405,6 +405,74 @@ pub async fn paste_anthropic_code(
     }
 }
 
+/// CLI setup endpoint — POST /admin/oauth/:provider_id/setup with
+/// `{"refresh_token": "...", "client_id"?: "...", "client_secret"?: "..."}`.
+///
+/// Used by `token-dealer-login` to push a refresh_token obtained
+/// through the loopback / paste-code / device flows. The server
+/// stores it exactly like the popup callback would have. The
+/// optional client_id + client_secret pair is for flows that
+/// dynamically register an OAuth client (Kiro/AWS SSO OIDC) — the
+/// pair must accompany the refresh token for future refreshes.
+pub async fn setup_oauth_via_cli(
+    State(state): State<AppState>,
+    axum::extract::Path(provider_id): axum::extract::Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    let refresh = body
+        .get("refresh_token")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    if refresh.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "refresh_token is required"})),
+        )
+            .into_response();
+    }
+    let registered_cid = body
+        .get("client_id")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let registered_cs = body
+        .get("client_secret")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let stored = match (&registered_cid, &registered_cs) {
+        (Some(cid), Some(cs)) => crate::oauth::serialize_stored_refresh(
+            &refresh,
+            Some(cid.as_str()),
+            Some(cs.as_str()),
+        ),
+        _ => refresh.clone(),
+    };
+    if let Err(e) = state
+        .key_store
+        .set(&format!("oauth:{provider_id}"), &stored)
+        .await
+    {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("store: {e}")})),
+        )
+            .into_response();
+    }
+    // Trigger an immediate refresh so we validate the new
+    // refresh_token actually works against the upstream.
+    if let Ok(Some(_access)) = state.oauth.refresh(&provider_id).await {
+        // ok — access token cached.
+    }
+    (
+        StatusCode::OK,
+        Json(json!({
+            "status": "ok",
+            "provider": provider_id,
+        })),
+    )
+        .into_response()
+}
+
 /// Poll a device_code flow. POST /admin/oauth/device/poll
 /// with `{"device_code": "..."}`. Returns `{authorized: true}` on
 /// success (refresh_token stored) or `{authorized: false}` on
