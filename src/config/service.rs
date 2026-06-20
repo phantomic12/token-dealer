@@ -42,6 +42,15 @@ impl ConfigService {
                 path: Arc::new(path),
             });
         }
+        // v0.2.0 plan item 6a: auto-migrate a v0.1.x config in
+        // place. Idempotent — a v0.2.0-shaped config (one that
+        // already has `[ratelimit]`) is left alone. Migration
+        // is non-interactive so `docker compose up -d` works in
+        // a non-TTY environment.
+        if let Err(e) = Self::migrate_v0_1_if_needed(&path).await {
+            tracing::warn!(error = %e, path = %path.display(),
+                "auto-migration failed; continuing with the on-disk config as-is");
+        }
         let text = tokio::fs::read_to_string(&path).await?;
         let outcome = validate_toml(&text);
         report_outcome(&outcome);
@@ -90,6 +99,120 @@ enabled = true
 # key = \"sk-...\"
 ";
         tokio::fs::write(path, body).await?;
+        Ok(())
+    }
+
+    /// Detect a v0.1.x config and rewrite it in place to
+    /// v0.2.0 shape. Idempotent: a config that already has
+    /// `[ratelimit]` is left alone.
+    ///
+    /// Heuristic (per the plan): pre-v0.2.0 iff the file has
+    /// no `[ratelimit]` section. v0.1.x had no such section.
+    /// We additionally treat the file as pre-v0.2.0 if any
+    /// `[[auth.keys]].key` is plaintext (no `enc:` prefix) —
+    /// the encryption feature is v0.2.0-only.
+    ///
+    /// Actions on a detected v0.1.x:
+    ///   1. Copy the current file to `<path>.v0.1.bak`.
+    ///   2. Add empty `[ratelimit]` with the plan's defaults.
+    ///   3. If `ROUTER_MASTER_KEY` is set, encrypt
+    ///      `[[auth.keys]].key` values in place (via
+    ///      `MasterKey::encrypt`). Otherwise leave plaintext
+    ///      and log a loud warning.
+    ///   4. Write the modified text back to disk.
+    ///   5. Log a one-line summary.
+    async fn migrate_v0_1_if_needed(path: &Path) -> anyhow::Result<()> {
+        let text = tokio::fs::read_to_string(path).await?;
+        let mut tree: toml::Value = toml::from_str(&text)?;
+        // Heuristic: any plaintext key in [[auth.keys]] marks
+        // the file as v0.1.x. Also detect the absence of
+        // [ratelimit] for completeness — a v0.1.x file won't
+        // have it. Either condition triggers migration.
+        let has_ratelimit = tree.get("ratelimit").and_then(|v| v.as_table()).is_some();
+        let has_plaintext_key = tree
+            .get("auth")
+            .and_then(|a| a.get("keys"))
+            .and_then(|k| k.as_array())
+            .map(|arr| {
+                arr.iter().any(|entry| {
+                    entry
+                        .get("key")
+                        .and_then(|v| v.as_str())
+                        .map(|s| !s.starts_with("enc:"))
+                        .unwrap_or(false)
+                })
+            })
+            .unwrap_or(false);
+        if has_ratelimit && !has_plaintext_key {
+            // Already on v0.2.0 shape.
+            return Ok(());
+        }
+        // Backup.
+        let backup = path.with_extension("toml.v0.1.bak");
+        if !backup.exists() {
+            tokio::fs::copy(path, &backup).await?;
+            tracing::info!(from = %path.display(), to = %backup.display(),
+                "v0.1.x config detected; backup written");
+        } else {
+            tracing::info!(backup = %backup.display(), "backup already exists; not overwriting");
+        }
+        // Add [ratelimit] defaults if missing.
+        if !has_ratelimit {
+            let mut ratelimit = toml::map::Map::new();
+            ratelimit.insert("enabled".into(), toml::Value::Boolean(true));
+            let mut global = toml::map::Map::new();
+            global.insert("refill_per_minute".into(), toml::Value::Integer(600));
+            global.insert("burst".into(), toml::Value::Integer(1200));
+            let mut per_key = toml::map::Map::new();
+            per_key.insert("refill_per_minute".into(), toml::Value::Integer(60));
+            per_key.insert("burst".into(), toml::Value::Integer(120));
+            let mut rl = toml::map::Map::new();
+            rl.insert("enabled".into(), toml::Value::Boolean(true));
+            rl.insert("global".into(), toml::Value::Table(global));
+            rl.insert("per_key".into(), toml::Value::Table(per_key));
+            tree.as_table_mut()
+                .unwrap()
+                .insert("ratelimit".into(), toml::Value::Table(rl));
+        }
+        // Encrypt auth keys if a master key is present.
+        let master = crate::auth::MasterKey::from_env_strict().ok();
+        if has_plaintext_key {
+            if let Some(m) = master {
+                if let Some(auth_table) = tree.get_mut("auth").and_then(|a| a.as_table_mut()) {
+                    // Find the [[auth.keys]] entries. They can
+                    // be either an array of tables (`[[auth.keys]]`)
+                    // or — for serde's tolerance — a single
+                    // table. Handle both shapes.
+                    if let Some(arr) = auth_table.get_mut("keys").and_then(|k| k.as_array_mut()) {
+                        let mut encrypted = 0usize;
+                        for entry in arr.iter_mut() {
+                            if let Some(table) = entry.as_table_mut() {
+                                if let Some(k) = table.get("key").and_then(|v| v.as_str()) {
+                                    if !k.starts_with("enc:") {
+                                        let enc = m.encrypt(
+                                            k,
+                                            crate::auth::keystore::purpose::TOML_AUTH_KEY,
+                                        );
+                                        table.insert("key".into(), toml::Value::String(enc));
+                                        encrypted += 1;
+                                    }
+                                }
+                            }
+                        }
+                        tracing::info!(encrypted, "v0.1.x auth keys encrypted in place");
+                    }
+                }
+            } else {
+                tracing::warn!(
+                    "v0.1.x config has plaintext [[auth.keys]].key values; \
+                     set ROUTER_MASTER_KEY and restart to encrypt them"
+                );
+            }
+        }
+        // Persist.
+        let new_text = toml::to_string_pretty(&tree)?;
+        tokio::fs::write(path, new_text).await?;
+        tracing::info!(path = %path.display(), "v0.1.x → v0.2.0 config rewrite complete");
         Ok(())
     }
 
