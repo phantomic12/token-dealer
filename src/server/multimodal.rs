@@ -73,7 +73,7 @@ pub async fn passthrough(
         .iter()
         .find(|p| p.id == provider_id)
         .and_then(|p| p.key.as_deref());
-    let key = resolve_key_async(&state.key_store, &provider_id, cfg_key).await;
+    let key = resolve_key_async(&state.key_store, &state.master, &provider_id, cfg_key).await;
     if key.is_empty() {
         return (
             StatusCode::BAD_REQUEST,

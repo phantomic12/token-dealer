@@ -758,7 +758,13 @@ pub async fn test_provider(
             format!("provider id '{}' already exists", body.id),
         );
     }
-    let key = resolve_key(&state.key_store, &body.id, body.key.as_deref()).await;
+    let key = resolve_key(
+        &state.key_store,
+        &state.master,
+        &body.id,
+        body.key.as_deref(),
+    )
+    .await;
 
     let adapter_result = state.pipeline.registry.build_transient(&body);
     let adapter = match adapter_result {

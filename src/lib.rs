@@ -30,6 +30,10 @@ pub struct AppState {
     pub db: db::Db,
     pub metadata: metadata::MetadataStore,
     pub key_store: auth::KeyStore,
+    /// Master key used to decrypt `enc:`-prefixed values in
+    /// config and to derive per-purpose subkeys. Required by
+    /// v0.2.0 when `[auth] enabled = true`.
+    pub master: auth::MasterKey,
     pub oauth: oauth::OAuthManager,
     pub user_store: auth::UserStore,
     pub pricing: cost::PricingStore,
@@ -48,6 +52,7 @@ impl AppState {
         db: db::Db,
         metadata: metadata::MetadataStore,
         key_store: auth::KeyStore,
+        master: auth::MasterKey,
         oauth: oauth::OAuthManager,
         user_store: auth::UserStore,
         pricing: cost::PricingStore,
@@ -60,6 +65,7 @@ impl AppState {
             db,
             metadata,
             key_store,
+            master,
             oauth,
             user_store,
             pricing,

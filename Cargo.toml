@@ -69,6 +69,9 @@ aes-gcm = "0.10"
 rand = "0.8"
 hex = "0.4"
 
+# HKDF-SHA256 for subkey derivation (per-purpose scopes)
+hkdf = "0.12"
+
 # Argon2 for password hashing (multi-user auth)
 argon2 = "0.5"
 sha2 = "0.10"

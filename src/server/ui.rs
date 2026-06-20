@@ -527,7 +527,8 @@ pub async fn playground_send(
         .iter()
         .find(|p| p.id == provider_id)
         .and_then(|p| p.key.as_deref());
-    let resolved = crate::auth::resolve(&state.key_store, &provider_id, cfg_key).await;
+    let resolved =
+        crate::auth::resolve(&state.key_store, &state.master, &provider_id, cfg_key).await;
     if let Some(override_key) = headers.get("x-router-key").and_then(|v| v.to_str().ok()) {
         if !override_key.is_empty() {
             routed.key = override_key.to_string();

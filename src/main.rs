@@ -30,8 +30,8 @@ async fn main() -> anyhow::Result<()> {
     }
 
     init_tracing();
-    let config_path = std::env::var("TOKEN_DEALER_CONFIG")
-        .unwrap_or_else(|_| "token-dealer.toml".to_string());
+    let config_path =
+        std::env::var("TOKEN_DEALER_CONFIG").unwrap_or_else(|_| "token-dealer.toml".to_string());
 
     let config = ConfigService::load(&config_path)
         .await
@@ -95,7 +95,17 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let health = HealthRegistry::new();
-    let master = MasterKey::from_env_or_generate()?;
+    // v0.2.0 plan item 2: refuse to start when [auth].enabled
+    // and ROUTER_MASTER_KEY is missing. Plaintext dev mode
+    // (auth.enabled = false) keeps the auto-generate fallback
+    // so first-time contributors aren't blocked.
+    let master = if snapshot.auth.enabled {
+        MasterKey::from_env_strict().map_err(|e| {
+            anyhow::anyhow!("{e}\n\nHint: generate one with: head -c 32 /dev/urandom | base64")
+        })?
+    } else {
+        MasterKey::from_env_or_generate()?
+    };
     let key_store = KeyStore::new(db.clone(), &master);
     let oauth = token_dealer::oauth::OAuthManager::new(db.clone(), key_store.clone(), http.clone());
     token_dealer::oauth::spawn_refresher(oauth.clone());
@@ -134,12 +144,14 @@ async fn main() -> anyhow::Result<()> {
         db.clone(),
         health.clone(),
         key_store.clone(),
+        master.clone(),
         oauth.clone(),
         user_store.clone(),
         pricing.clone(),
     );
     let state = AppState::new(
-        pipeline, config, health, db, metadata, key_store, oauth, user_store, pricing, telemetry,
+        pipeline, config, health, db, metadata, key_store, master, oauth, user_store, pricing,
+        telemetry,
     );
 
     let app = build_router(state);

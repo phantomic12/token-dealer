@@ -26,6 +26,9 @@ pub struct Pipeline {
     pub db: crate::db::Db,
     pub health: crate::providers::HealthRegistry,
     pub key_store: crate::auth::KeyStore,
+    /// Master key for decrypting `enc:`-prefixed values at
+    /// dispatch time. Mirrors the AppState field.
+    pub master: crate::auth::MasterKey,
     pub oauth: crate::oauth::OAuthManager,
     pub user_store: crate::auth::UserStore,
     pub pricing: crate::cost::PricingStore,
@@ -51,6 +54,7 @@ impl Pipeline {
         db: crate::db::Db,
         health: crate::providers::HealthRegistry,
         key_store: crate::auth::KeyStore,
+        master: crate::auth::MasterKey,
         oauth: crate::oauth::OAuthManager,
         user_store: crate::auth::UserStore,
         pricing: crate::cost::PricingStore,
@@ -64,6 +68,7 @@ impl Pipeline {
             db,
             health,
             key_store,
+            master,
             oauth,
             user_store,
             pricing,
@@ -109,7 +114,8 @@ impl Pipeline {
             // If the provider has OAuth config, prefer the access token
             // from the OAuth manager. The user-facing `key` field is
             // treated as a refresh token in that case.
-            let resolved = resolve_key(&self.key_store, &route.provider_id, cfg_key).await;
+            let resolved =
+                resolve_key(&self.key_store, &self.master, &route.provider_id, cfg_key).await;
             if let Some(pt) = crate::providers::resolve_alias(&route.provider_id) {
                 if let Some(m) = crate::providers::manifest::lookup(pt) {
                     if m.oauth.is_some() {
@@ -178,6 +184,7 @@ impl Pipeline {
         let registry = self.registry.clone();
         let config = self.config.clone();
         let key_store = self.key_store.clone();
+        let master = self.master.clone();
         let health_hook = super::fallback::HealthHook {
             registry: self.health.clone(),
             failure_threshold: cfg.retry.max_same_provider_retries.max(1),
@@ -189,6 +196,7 @@ impl Pipeline {
                 let r = registry.clone();
                 let c = config.clone();
                 let ks = key_store.clone();
+                let m = master.clone();
                 let p = pid.to_string();
                 async move {
                     let g = r.read().await;
@@ -199,7 +207,7 @@ impl Pipeline {
                         .iter()
                         .find(|prov| prov.id == p)
                         .and_then(|prov| prov.key.as_deref());
-                    let key = resolve_key(&ks, &p, cfg_key).await;
+                    let key = resolve_key(&ks, &m, &p, cfg_key).await;
                     Some(ProviderHandle {
                         provider_id: p,
                         model_id: adapter.default_model().to_string(),
