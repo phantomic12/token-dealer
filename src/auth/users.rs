@@ -160,6 +160,16 @@ pub fn generate_session_token() -> (String, String) {
     (plaintext, hash)
 }
 
+/// Generate a random admin password. 24 chars, base64url-safe
+/// (no padding, no ambiguous chars). Used by the first-run
+/// bootstrap to mint an initial admin password.
+pub fn generate_admin_password() -> String {
+    use base64::Engine;
+    let mut buf = [0u8; 18]; // 18 bytes → 24 base64url chars
+    OsRng.fill_bytes(&mut buf);
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(buf)
+}
+
 // ── UserStore: the in-process layer that talks to the DB ──────────
 
 #[derive(Clone)]
@@ -229,6 +239,31 @@ impl UserStore {
                 }
             })
             .await
+    }
+
+    /// Update the password hash for an existing user. Used by
+    /// the rotate-password flow. Validates the new password by
+    /// hashing it through the same Argon2 path used at create
+    /// time.
+    pub async fn update_password(&self, user_id: &str, new_password: &str) -> anyhow::Result<()> {
+        if new_password.is_empty() {
+            anyhow::bail!("password must not be empty");
+        }
+        let new_hash = hash_password(new_password)?;
+        let id = user_id.to_string();
+        let n = self
+            .db
+            .with(move |c| {
+                Ok(c.execute(
+                    "UPDATE users SET password_hash = ? WHERE id = ?",
+                    rusqlite::params![&new_hash, &id],
+                )?)
+            })
+            .await?;
+        if n == 0 {
+            anyhow::bail!("user not found: {user_id}");
+        }
+        Ok(())
     }
 
     pub async fn get_user_by_email(&self, email: &str) -> anyhow::Result<Option<User>> {

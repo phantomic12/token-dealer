@@ -199,6 +199,43 @@ async fn shutdown_signal() {
     tracing::info!("shutdown signal received");
 }
 
+/// v0.2.0 plan item 1: when auth is enabled and the user table
+/// is empty, create the first admin with a randomly generated
+/// password and print it once with a "save this" banner.
+async fn bootstrap_admin_if_needed(
+    user_store: &token_dealer::auth::UserStore,
+) -> anyhow::Result<()> {
+    let users = user_store.list_users().await?;
+    if !users.is_empty() {
+        return Ok(());
+    }
+    let password = token_dealer::auth::generate_admin_password();
+    let email = "admin@local".to_string();
+    let name = "Admin".to_string();
+    let _admin = user_store
+        .create_user(
+            &email,
+            &name,
+            Some(&password),
+            token_dealer::auth::Role::Admin,
+        )
+        .await?;
+    eprintln!();
+    eprintln!("═══════════════════════════════════════════════════════════════");
+    eprintln!("  token-dealer v0.2.0: first-run admin bootstrap");
+    eprintln!("═══════════════════════════════════════════════════════════════");
+    eprintln!("  Email:    {email}");
+    eprintln!("  Password: {password}");
+    eprintln!();
+    eprintln!("  Save this password. It will NOT be shown again.");
+    eprintln!("  Rotate it after first login:");
+    eprintln!("    POST /admin/auth/rotate-password");
+    eprintln!("    {{ \"current_password\": \"...\", \"new_password\": \"...\" }}");
+    eprintln!("═══════════════════════════════════════════════════════════════");
+    eprintln!();
+    Ok(())
+}
+
 fn run_healthcheck() -> anyhow::Result<()> {
     // For Docker HEALTHCHECK: just verify the port is accepting
     // connections. The /health endpoint is exercised by the actual

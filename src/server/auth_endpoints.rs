@@ -182,6 +182,93 @@ pub async fn me(axum::extract::Extension(user): axum::extract::Extension<UserCon
     .into_response()
 }
 
+// ── Admin: password rotation ───────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct RotatePasswordReq {
+    pub current_password: String,
+    pub new_password: String,
+}
+
+/// POST /admin/auth/rotate-password — rotate the caller's own
+/// password. Requires the current password for verification.
+/// Returns 200 on success, 401 if the current password is wrong,
+/// 400 if the new password is empty. Per the v0.2.0 plan
+/// (item 1), this is the path users take after the first-run
+/// bootstrap to replace the auto-generated password.
+pub async fn rotate_password(
+    State(state): State<AppState>,
+    axum::extract::Extension(caller): axum::extract::Extension<UserContext>,
+    Json(body): Json<RotatePasswordReq>,
+) -> Response {
+    if body.new_password.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "new_password must not be empty"})),
+        )
+            .into_response();
+    }
+    let user = match state.user_store.get_user(&caller.user_id).await {
+        Ok(Some(u)) => u,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "user not found"})),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "rotate_password get_user failed");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "internal error"})),
+            )
+                .into_response();
+        }
+    };
+    // Verify the current password. If the user has no password
+    // (API-key-only), reject — they can't rotate to a password
+    // without setting one first.
+    let stored_hash = match user.password_hash.as_deref() {
+        Some(h) => h,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": "user has no password set; cannot rotate"
+                })),
+            )
+                .into_response();
+        }
+    };
+    if !verify_password(&body.current_password, stored_hash) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "current_password is wrong"})),
+        )
+            .into_response();
+    }
+    if let Err(e) = state
+        .user_store
+        .update_password(&caller.user_id, &body.new_password)
+        .await
+    {
+        tracing::error!(error = %e, "rotate_password update failed");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": "internal error"})),
+        )
+            .into_response();
+    }
+    // Invalidate all other sessions for this user. The current
+    // caller's session (if any) stays valid; they can finish
+    // whatever they were doing.
+    if let Err(e) = state.user_store.delete_user_sessions(&caller.user_id).await {
+        tracing::warn!(error = %e, "rotate_password session prune failed");
+    }
+    Json(serde_json::json!({"status": "ok"})).into_response()
+}
+
 // ── Admin: user management ─────────────────────────────────────────
 
 #[derive(Deserialize)]

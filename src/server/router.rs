@@ -118,6 +118,10 @@ pub fn build_router(state: AppState) -> Router {
             axum::routing::delete(auth_endpoints::delete_own_key),
         )
         .route("/auth/usage", get(auth_endpoints::my_usage))
+        .route(
+            "/admin/auth/rotate-password",
+            post(auth_endpoints::rotate_password),
+        )
         // Admin user management
         .route(
             "/admin/users",
