@@ -9,8 +9,8 @@
 //! manifest version has 100+ lines of frame validation. If you see weird
 //! truncation, file an issue and we'll port the strict parser across.
 
-use crate::providers::adapter::{Capability, ProviderAdapter, ProviderStream};
 use crate::error::{AppError, AppResult};
+use crate::providers::adapter::{Capability, ProviderAdapter, ProviderStream};
 use crate::schema::canonical::*;
 use async_stream::try_stream;
 use bytes::Bytes;
@@ -192,7 +192,9 @@ impl ProviderAdapter for KiroAdapter {
                 content: if content.is_empty() {
                     Vec::new()
                 } else {
-                    vec![ContentBlock::Text { text: content.clone() }]
+                    vec![ContentBlock::Text {
+                        text: content.clone(),
+                    }]
                 },
                 finish_reason: Some("stop".to_string()),
                 usage,

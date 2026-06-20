@@ -62,7 +62,8 @@ pub struct ManifestOAuth {
     /// of the standard snake_case (GitHub Copilot, Kiro). When
     /// `true`, we read `deviceCode`/`userCode`/`verificationUri`
     /// instead of `device_code`/`user_code`/`verification_uri`.
-    #[allow(dead_code)] pub device_response_camelcase: bool,
+    #[allow(dead_code)]
+    pub device_response_camelcase: bool,
 }
 
 /// Subscription metadata for token-mode providers. These are not

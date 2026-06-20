@@ -164,7 +164,10 @@ pub async fn auto_assign_tiers(
     let mut out = HashMap::new();
     let mut by_provider: HashMap<String, Vec<String>> = HashMap::new();
     for m in discovered {
-        by_provider.entry(m.provider_id).or_default().push(m.model_id);
+        by_provider
+            .entry(m.provider_id)
+            .or_default()
+            .push(m.model_id);
     }
     let tiers = [
         (Tier::Simple, 2.0_f64),

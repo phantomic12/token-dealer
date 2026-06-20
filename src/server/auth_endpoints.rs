@@ -5,11 +5,11 @@
 //! either an API key OR email+password.
 
 use crate::auth::{
-    ApiKey, Role, User, UserContext, UserStore, generate_session_token, hash_password,
-    sha256_hex, verify_password,
+    generate_session_token, hash_password, sha256_hex, verify_password, ApiKey, Role, User,
+    UserContext, UserStore,
 };
-use crate::server::AppState;
 use crate::server::auth as mw;
+use crate::server::AppState;
 use axum::extract::State;
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -44,7 +44,13 @@ pub async fn login(
     // Path 1: API key login. Verify the key, create a session.
     if let Some(key) = &body.api_key {
         if !key.is_empty() {
-            if let Some((user, _api_key)) = state.user_store.get_user_by_api_key(key).await.ok().flatten() {
+            if let Some((user, _api_key)) = state
+                .user_store
+                .get_user_by_api_key(key)
+                .await
+                .ok()
+                .flatten()
+            {
                 return finish_login(&state, &headers, &user).await;
             }
             return (
@@ -100,7 +106,14 @@ async fn finish_login(state: &AppState, headers: &HeaderMap, user: &User) -> Res
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.split(',').next())
         .map(String::from);
-    let plaintext = match mw::create_session_cookie(state, &user.id, user_agent.as_deref(), ip.as_deref()).await {
+    let plaintext = match mw::create_session_cookie(
+        state,
+        &user.id,
+        user_agent.as_deref(),
+        ip.as_deref(),
+    )
+    .await
+    {
         Ok(s) => s,
         Err(e) => {
             return (
@@ -129,10 +142,8 @@ async fn finish_login(state: &AppState, headers: &HeaderMap, user: &User) -> Res
         })),
     )
         .into_response();
-    resp.headers_mut().insert(
-        header::SET_COOKIE,
-        cookie_value.parse().unwrap(),
-    );
+    resp.headers_mut()
+        .insert(header::SET_COOKIE, cookie_value.parse().unwrap());
     resp
 }
 
@@ -159,9 +170,7 @@ pub async fn logout(
 }
 
 /// GET /auth/me — returns the current user context.
-pub async fn me(
-    axum::extract::Extension(user): axum::extract::Extension<UserContext>,
-) -> Response {
+pub async fn me(axum::extract::Extension(user): axum::extract::Extension<UserContext>) -> Response {
     Json(serde_json::json!({
         "id": user.user_id,
         "email": user.email,
@@ -191,27 +200,32 @@ pub async fn create_user(
     Json(body): Json<CreateUserReq>,
 ) -> Response {
     if !caller.is_admin() {
-        return (StatusCode::FORBIDDEN, Json(serde_json::json!({"error": "admin only"})))
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({"error": "admin only"})),
+        )
             .into_response();
     }
-    let role = body
-        .role
-        .as_deref()
-        .map(Role::parse)
-        .unwrap_or(Role::User);
+    let role = body.role.as_deref().map(Role::parse).unwrap_or(Role::User);
     match state
         .user_store
         .create_user(&body.email, &body.name, body.password.as_deref(), role)
         .await
     {
-        Ok(u) => (StatusCode::CREATED, Json(serde_json::json!({
-            "id": u.id,
-            "email": u.email,
-            "name": u.name,
-            "role": u.role.as_str(),
-        })))
-        .into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e.to_string()})))
+        Ok(u) => (
+            StatusCode::CREATED,
+            Json(serde_json::json!({
+                "id": u.id,
+                "email": u.email,
+                "name": u.name,
+                "role": u.role.as_str(),
+            })),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
             .into_response(),
     }
 }
@@ -222,7 +236,10 @@ pub async fn list_users(
     axum::extract::Extension(caller): axum::extract::Extension<UserContext>,
 ) -> Response {
     if !caller.is_admin() {
-        return (StatusCode::FORBIDDEN, Json(serde_json::json!({"error": "admin only"})))
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({"error": "admin only"})),
+        )
             .into_response();
     }
     match state.user_store.list_users().await {
@@ -242,7 +259,10 @@ pub async fn list_users(
                 .collect();
             (StatusCode::OK, Json(serde_json::json!({"users": arr}))).into_response()
         }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()})))
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
             .into_response(),
     }
 }
@@ -254,12 +274,22 @@ pub async fn delete_user(
     axum::extract::Extension(caller): axum::extract::Extension<UserContext>,
 ) -> Response {
     if !caller.is_admin() {
-        return (StatusCode::FORBIDDEN, Json(serde_json::json!({"error": "admin only"})))
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({"error": "admin only"})),
+        )
             .into_response();
     }
     match state.user_store.delete_user(&id).await {
-        Ok(_) => (StatusCode::OK, Json(serde_json::json!({"status": "deleted"}))).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()})))
+        Ok(_) => (
+            StatusCode::OK,
+            Json(serde_json::json!({"status": "deleted"})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
             .into_response(),
     }
 }
@@ -276,12 +306,18 @@ pub async fn create_own_key(
         .unwrap_or("default")
         .to_string();
     match state.user_store.create_api_key(&user.user_id, &name).await {
-        Ok((_key, plaintext)) => (StatusCode::OK, Json(serde_json::json!({
-            "api_key": plaintext,
-            "warning": "Save this key — it won't be shown again.",
-        })))
-        .into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()})))
+        Ok((_key, plaintext)) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "api_key": plaintext,
+                "warning": "Save this key — it won't be shown again.",
+            })),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
             .into_response(),
     }
 }
@@ -308,7 +344,10 @@ pub async fn list_own_keys(
                 .collect();
             (StatusCode::OK, Json(serde_json::json!({"keys": arr}))).into_response()
         }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()})))
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
             .into_response(),
     }
 }
@@ -320,15 +359,29 @@ pub async fn delete_own_key(
     axum::extract::Extension(user): axum::extract::Extension<UserContext>,
 ) -> Response {
     // Verify the key belongs to this user before deleting.
-    let keys = state.user_store.list_api_keys(&user.user_id).await.unwrap_or_default();
+    let keys = state
+        .user_store
+        .list_api_keys(&user.user_id)
+        .await
+        .unwrap_or_default();
     let owned = keys.iter().any(|k| k.id == id);
     if !owned {
-        return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "not found"})))
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "not found"})),
+        )
             .into_response();
     }
     match state.user_store.delete_api_key(&id).await {
-        Ok(_) => (StatusCode::OK, Json(serde_json::json!({"status": "deleted"}))).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()})))
+        Ok(_) => (
+            StatusCode::OK,
+            Json(serde_json::json!({"status": "deleted"})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
             .into_response(),
     }
 }
@@ -338,7 +391,11 @@ pub async fn my_usage(
     State(state): State<AppState>,
     axum::extract::Extension(user): axum::extract::Extension<UserContext>,
 ) -> Response {
-    let today = state.user_store.get_usage_today(&user.user_id).await.unwrap_or((0, 0, 0.0, 0));
+    let today = state
+        .user_store
+        .get_usage_today(&user.user_id)
+        .await
+        .unwrap_or((0, 0, 0.0, 0));
     let last30 = state
         .user_store
         .get_usage_summary(&user.user_id, 30)
@@ -382,7 +439,10 @@ pub async fn admin_create_key(
     axum::Json(body): axum::Json<AdminCreateKeyReq>,
 ) -> Response {
     if !caller.is_admin() {
-        return (StatusCode::FORBIDDEN, Json(serde_json::json!({"error": "admin only"})))
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({"error": "admin only"})),
+        )
             .into_response();
     }
     // If the path is "__self__" the user_id comes from the body.
@@ -392,17 +452,26 @@ pub async fn admin_create_key(
         user_id_path
     };
     if target.is_empty() {
-        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "user_id required"})))
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "user_id required"})),
+        )
             .into_response();
     }
     match state.user_store.create_api_key(&target, &body.name).await {
-        Ok((_key, plaintext)) => (StatusCode::OK, Json(serde_json::json!({
-            "api_key": plaintext,
-            "user_id": target,
-            "warning": "Save this key — it won't be shown again.",
-        })))
-        .into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()})))
+        Ok((_key, plaintext)) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "api_key": plaintext,
+                "user_id": target,
+                "warning": "Save this key — it won't be shown again.",
+            })),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
             .into_response(),
     }
 }

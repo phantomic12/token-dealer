@@ -115,7 +115,15 @@ pub fn update_request_final(
                finished = ?6,
                finish_reason = ?7
            WHERE id = ?1"#,
-        params![id, total_latency_ms, input_tokens, output_tokens, cost_usd, finished as i32, finish_reason],
+        params![
+            id,
+            total_latency_ms,
+            input_tokens,
+            output_tokens,
+            cost_usd,
+            finished as i32,
+            finish_reason
+        ],
     )?;
     Ok(())
 }
@@ -172,7 +180,9 @@ pub fn list_requests(conn: &Connection, filter: &LogFilter) -> rusqlite::Result<
 }
 
 pub fn count_requests(conn: &Connection) -> rusqlite::Result<i64> {
-    conn.query_row("SELECT COUNT(*) FROM request_log", [], |r| r.get::<_, i64>(0))
+    conn.query_row("SELECT COUNT(*) FROM request_log", [], |r| {
+        r.get::<_, i64>(0)
+    })
 }
 
 pub fn attempts_for_request(

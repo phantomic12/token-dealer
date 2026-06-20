@@ -3,8 +3,8 @@
 //! toolchain, no separate static directory. Everything is generated
 //! from Rust + an embedded stylesheet. HTMX loads from a CDN.
 
-use super::AppState;
 use super::auth as mw;
+use super::AppState;
 use axum::{
     extract::{Path, State},
     http::{header, StatusCode},
@@ -281,9 +281,7 @@ pub async fn dashboard(State(state): State<AppState>) -> Response {
     let provider_rows: String = providers
         .iter()
         .map(|(id, model)| {
-            format!(
-                r##"<tr><td><a href="/ui/providers#{id}">{id}</a></td><td>{model}</td></tr>"##
-            )
+            format!(r##"<tr><td><a href="/ui/providers#{id}">{id}</a></td><td>{model}</td></tr>"##)
         })
         .collect();
 
@@ -447,8 +445,11 @@ pub async fn playground_send(
         None => {
             // Treat as tier name
             let cfg = state.config.snapshot().await;
-            let tier = crate::schema::canonical::Tier::parse(&model)
-                .or_else(|| cfg.tiers.get(&model).map(|_| crate::schema::canonical::Tier::Standard));
+            let tier = crate::schema::canonical::Tier::parse(&model).or_else(|| {
+                cfg.tiers
+                    .get(&model)
+                    .map(|_| crate::schema::canonical::Tier::Standard)
+            });
             let tier = match tier {
                 Some(t) => t,
                 None => {
@@ -458,12 +459,7 @@ pub async fn playground_send(
                     .into_response();
                 }
             };
-            let route = match state
-                .pipeline
-                .selector
-                .route_tier(&cfg, tier)
-                .await
-            {
+            let route = match state.pipeline.selector.route_tier(&cfg, tier).await {
                 Some(r) => r,
                 None => {
                     return Html(format!(
@@ -663,7 +659,11 @@ pub async fn oauth_done_page(
   </script>
 </body>
 </html>"##,
-        status_class = if status == "ok" { "status-ok" } else { "status-err" },
+        status_class = if status == "ok" {
+            "status-ok"
+        } else {
+            "status-err"
+        },
         status_icon = if status == "ok" { "✓" } else { "✕" },
         body_msg = if status == "ok" {
             format!("Refresh token stored. You can close this window.")
@@ -730,119 +730,131 @@ fn render_wizard_step1() -> String {
 
     // OAuth-enabled (subscriptions that connect through OAuth)
 
-            // Each entry: (display_name, type_str, group)
-            //   group: "cloud" | "oauth" | "local"
-            let order: &[(&str, &str, &str)] = &[
-                // OAuth-enabled (subscriptions that connect through OAuth)
-                ("Anthropic (Claude)", "anthropic", "oauth"),
-                ("ChatGPT Plus/Pro/Team (openai)", "openai", "oauth"),
-                ("ChatGPT (codex o3)", "responses", "oauth"),
-                ("Sign in with Google (CodeAssist)", "google", "oauth"),
-                ("Grok subscription (xai)", "xai", "oauth"),
-                ("GitHub Copilot", "github-copilot", "oauth"),
-                ("Kiro", "kiro", "oauth"),
-                ("MiniMax Coding Plan", "minimax", "oauth"),
-                // Cloud APIs
-                ("OpenRouter", "openrouter", "cloud"),
-                ("TokenRouter", "tokenrouter", "cloud"),
-                ("Groq", "groq", "cloud"),
-                ("DeepSeek", "deepseek", "cloud"),
-                ("Fireworks", "fireworks", "cloud"),
-                ("Mistral", "mistral", "cloud"),
-                ("Qwen (Alibaba)", "qwen", "cloud"),
-                ("Moonshot (Kimi)", "moonshot", "cloud"),
-                ("Z.ai (GLM)", "zai", "cloud"),
-                ("Xiaomi (MiMo)", "xiaomi", "cloud"),
-                ("BytePlus (ModelArk)", "byteplus", "cloud"),
-                ("NVIDIA NIM", "nvidia", "cloud"),
-                ("OpenCode Go", "opencode-go", "cloud"),
-                ("OpenCode Zen", "opencode-zen", "cloud"),
-                ("Kilo", "kilo", "cloud"),
-                ("CommandCode", "commandcode", "cloud"),
-                ("Gitlawb / OpenGateway", "gitlawb", "cloud"),
-                ("Generic OpenAI-compatible", "generic", "cloud"),
-                // Local
-                ("Ollama (local)", "ollama", "local"),
-                ("Ollama Cloud", "ollama-cloud", "local"),
-                ("llama.cpp (local)", "llamacpp", "local"),
-                ("LM Studio (local)", "lmstudio", "local"),
-            ];
+    // Each entry: (display_name, type_str, group)
+    //   group: "cloud" | "oauth" | "local"
+    let order: &[(&str, &str, &str)] = &[
+        // OAuth-enabled (subscriptions that connect through OAuth)
+        ("Anthropic (Claude)", "anthropic", "oauth"),
+        ("ChatGPT Plus/Pro/Team (openai)", "openai", "oauth"),
+        ("ChatGPT (codex o3)", "responses", "oauth"),
+        ("Sign in with Google (CodeAssist)", "google", "oauth"),
+        ("Grok subscription (xai)", "xai", "oauth"),
+        ("GitHub Copilot", "github-copilot", "oauth"),
+        ("Kiro", "kiro", "oauth"),
+        ("MiniMax Coding Plan", "minimax", "oauth"),
+        // Cloud APIs
+        ("OpenRouter", "openrouter", "cloud"),
+        ("TokenRouter", "tokenrouter", "cloud"),
+        ("Groq", "groq", "cloud"),
+        ("DeepSeek", "deepseek", "cloud"),
+        ("Fireworks", "fireworks", "cloud"),
+        ("Mistral", "mistral", "cloud"),
+        ("Qwen (Alibaba)", "qwen", "cloud"),
+        ("Moonshot (Kimi)", "moonshot", "cloud"),
+        ("Z.ai (GLM)", "zai", "cloud"),
+        ("Xiaomi (MiMo)", "xiaomi", "cloud"),
+        ("BytePlus (ModelArk)", "byteplus", "cloud"),
+        ("NVIDIA NIM", "nvidia", "cloud"),
+        ("OpenCode Go", "opencode-go", "cloud"),
+        ("OpenCode Zen", "opencode-zen", "cloud"),
+        ("Kilo", "kilo", "cloud"),
+        ("CommandCode", "commandcode", "cloud"),
+        ("Gitlawb / OpenGateway", "gitlawb", "cloud"),
+        ("Generic OpenAI-compatible", "generic", "cloud"),
+        // Local
+        ("Ollama (local)", "ollama", "local"),
+        ("Ollama Cloud", "ollama-cloud", "local"),
+        ("llama.cpp (local)", "llamacpp", "local"),
+        ("LM Studio (local)", "lmstudio", "local"),
+    ];
 
-            let mut groups: std::collections::BTreeMap<&str, Vec<(&str, &str, &str)>> =
-                std::collections::BTreeMap::new();
-            for (display, type_str, group) in order {
-                groups.entry(group).or_default().push((display, type_str, *group));
-            }
+    let mut groups: std::collections::BTreeMap<&str, Vec<(&str, &str, &str)>> =
+        std::collections::BTreeMap::new();
+    for (display, type_str, group) in order {
+        groups
+            .entry(group)
+            .or_default()
+            .push((display, type_str, *group));
+    }
 
-            let group_titles: &[(&str, &str)] = &[
-                ("oauth", "Subscriptions & OAuth (click to connect)"),
-                ("cloud", "Cloud APIs (paste your API key)"),
-                ("local", "Local & self-hosted"),
-            ];
+    let group_titles: &[(&str, &str)] = &[
+        ("oauth", "Subscriptions & OAuth (click to connect)"),
+        ("cloud", "Cloud APIs (paste your API key)"),
+        ("local", "Local & self-hosted"),
+    ];
 
-            let mut body = String::new();
-            body.push_str(r##"<div class="provider-picker" id="wizard"><input class="search" id="provider-search" type="search" placeholder="Type to filter providers (e.g. anthropic, groq, local)…" autocomplete="off" /><div id="provider-groups">"##);
+    let mut body = String::new();
+    body.push_str(r##"<div class="provider-picker" id="wizard"><input class="search" id="provider-search" type="search" placeholder="Type to filter providers (e.g. anthropic, groq, local)…" autocomplete="off" /><div id="provider-groups">"##);
 
-            for (group_key, group_title) in group_titles {
-                let entries = match groups.get(group_key) {
-                    Some(e) => e,
-                    None => continue,
-                };
-                let _ = write!(body, r##"<div class="group" data-group="{gk}"><h3>{title}</h3>"##, gk = group_key, title = group_title);
-                for (display, type_str, _) in entries {
-                    let info = crate::providers::manifest::ALL_TYPES
-                        .iter()
-                        .find(|pt| provider_type_to_str(pt) == *type_str)
-                        .and_then(|pt| manifest::lookup(*pt));
-                    let (badge, badge_class, meta) = match info {
-                        Some(m) => {
-                            let base = m.base_url;
-                            if m.local_only {
-                                ("local", "local", base.to_string())
-                            } else if m.oauth.is_some() {
-                                // Differentiate device-code vs popup_oauth
-                                let is_device = !m.oauth.as_ref().unwrap().device_code_url.is_empty();
-                                if is_device {
-                                    ("device", "oauth", format!("{} · device code", base))
-                                } else if m.oauth.as_ref().unwrap().authorize_url.is_empty() {
-                                    ("refresh", "oauth", format!("{} · paste refresh token", base))
-                                } else {
-                                    ("oauth", "oauth", format!("{} · popup", base))
-                                }
-                            } else if m.subscription.is_some() {
-                                let sub = m.subscription.unwrap();
-                                let prefix = if sub.token_prefix.is_empty() {
-                                    String::new()
-                                } else {
-                                    format!(" · {}", sub.token_prefix)
-                                };
-                                ("plan", "subscription", format!("{}{}", sub.label, prefix))
-                            } else {
-                                ("api", "healthy", base.to_string())
-                            }
+    for (group_key, group_title) in group_titles {
+        let entries = match groups.get(group_key) {
+            Some(e) => e,
+            None => continue,
+        };
+        let _ = write!(
+            body,
+            r##"<div class="group" data-group="{gk}"><h3>{title}</h3>"##,
+            gk = group_key,
+            title = group_title
+        );
+        for (display, type_str, _) in entries {
+            let info = crate::providers::manifest::ALL_TYPES
+                .iter()
+                .find(|pt| provider_type_to_str(pt) == *type_str)
+                .and_then(|pt| manifest::lookup(*pt));
+            let (badge, badge_class, meta) = match info {
+                Some(m) => {
+                    let base = m.base_url;
+                    if m.local_only {
+                        ("local", "local", base.to_string())
+                    } else if m.oauth.is_some() {
+                        // Differentiate device-code vs popup_oauth
+                        let is_device = !m.oauth.as_ref().unwrap().device_code_url.is_empty();
+                        if is_device {
+                            ("device", "oauth", format!("{} · device code", base))
+                        } else if m.oauth.as_ref().unwrap().authorize_url.is_empty() {
+                            (
+                                "refresh",
+                                "oauth",
+                                format!("{} · paste refresh token", base),
+                            )
+                        } else {
+                            ("oauth", "oauth", format!("{} · popup", base))
                         }
-                        None => ("?", "healthy", "no manifest".to_string()),
-                    };
-                    let _ = write!(
-                        body,
-                        r##"<a class="row {group_cls}" data-search="{search_blob}" href="/ui/providers/new/config?type={t}" hx-get="/ui/providers/new/config?type={t}" hx-target="#wizard" hx-swap="outerHTML" hx-push-url="true">
+                    } else if m.subscription.is_some() {
+                        let sub = m.subscription.unwrap();
+                        let prefix = if sub.token_prefix.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" · {}", sub.token_prefix)
+                        };
+                        ("plan", "subscription", format!("{}{}", sub.label, prefix))
+                    } else {
+                        ("api", "healthy", base.to_string())
+                    }
+                }
+                None => ("?", "healthy", "no manifest".to_string()),
+            };
+            let _ = write!(
+                body,
+                r##"<a class="row {group_cls}" data-search="{search_blob}" href="/ui/providers/new/config?type={t}" hx-get="/ui/providers/new/config?type={t}" hx-target="#wizard" hx-swap="outerHTML" hx-push-url="true">
                           <span class="name">{display}</span>
                           <span class="badge {bc}">{badge}</span>
                           <span class="meta">{meta}</span>
                         </a>"##,
-                        group_cls = badge_class,
-                        search_blob = format!("{} {} {}", display.to_lowercase(), type_str, badge),
-                        t = type_str,
-                        display = display,
-                        badge = badge,
-                        bc = badge_class,
-                        meta = meta,
-                    );
-                }
-                body.push_str("</div>");
-            }
-            body.push_str(r##"</div>"##);
-            body.push_str(
+                group_cls = badge_class,
+                search_blob = format!("{} {} {}", display.to_lowercase(), type_str, badge),
+                t = type_str,
+                display = display,
+                badge = badge,
+                bc = badge_class,
+                meta = meta,
+            );
+        }
+        body.push_str("</div>");
+    }
+    body.push_str(r##"</div>"##);
+    body.push_str(
                 r##"<script>
         (function(){
           const input = document.getElementById('provider-search');
@@ -887,8 +899,8 @@ fn render_wizard_step1() -> String {
         </script>"##,
             );
 
-            format!(
-                r##"
+    format!(
+        r##"
         <h1>Add a provider</h1>
         <div class="wizard-steps">
           <span class="step active">1. Pick provider</span>
@@ -938,9 +950,7 @@ fn render_wizard_step2(provider_type: &str) -> String {
     let is_device_code = oauth
         .map(|o| !o.device_code_url.is_empty())
         .unwrap_or(false);
-    let is_anthropic_paste = oauth
-        .map(|o| o.is_anthropic_paste_code)
-        .unwrap_or(false);
+    let is_anthropic_paste = oauth.map(|o| o.is_anthropic_paste_code).unwrap_or(false);
 
     let id_suggestion = if provider_type == "generic" {
         "my-proxy".to_string()
@@ -1295,9 +1305,7 @@ pub async fn providers_partial(State(state): State<AppState>) -> Response {
     Html(render_providers_list(&snap.providers).await).into_response()
 }
 
-async fn render_providers_list(
-    providers: &[crate::config::types::ProviderConfig],
-) -> String {
+async fn render_providers_list(providers: &[crate::config::types::ProviderConfig]) -> String {
     if providers.is_empty() {
         return r##"<div class="center-empty" id="provider-list">No providers configured. Add one above, or uncomment a block in <code>token-dealer.toml</code> and POST <code>/admin/config/reload</code>.</div>"##.to_string();
     }
@@ -1353,10 +1361,7 @@ async fn render_providers_list(
 }
 
 /// Form-driven remove (HTMX form posts here, returns updated list).
-pub async fn ui_remove_provider(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Response {
+pub async fn ui_remove_provider(State(state): State<AppState>, Path(id): Path<String>) -> Response {
     let result = state
         .config
         .update_with(|cfg| {
@@ -1371,7 +1376,10 @@ pub async fn ui_remove_provider(
         }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Html(format!(r##"<div class="flash error">save failed: {}</div>"##, e)),
+            Html(format!(
+                r##"<div class="flash error">save failed: {}</div>"##,
+                e
+            )),
         )
             .into_response(),
     }
@@ -1451,11 +1459,10 @@ pub async fn rules_page(State(state): State<AppState>) -> Response {
     Html(layout("rules", "Rules", &body, None)).into_response()
 }
 
-fn render_rules_list(
-    rules: &[crate::config::types::DetectionRule],
-) -> String {
+fn render_rules_list(rules: &[crate::config::types::DetectionRule]) -> String {
     if rules.is_empty() {
-        return r#"<div class="center-empty" id="rule-list">No rules. Add one above.</div>"#.to_string();
+        return r#"<div class="center-empty" id="rule-list">No rules. Add one above.</div>"#
+            .to_string();
     }
     let mut rows = String::new();
     for (i, r) in rules.iter().enumerate() {
@@ -1589,7 +1596,14 @@ fn render_tiers_list(
         return r##"<div class="center-empty">No tiers configured. Add a <code>[tiers.*]</code> block to <code>token-dealer.toml</code> and POST <code>/admin/config/reload</code>.</div>"##.to_string();
     }
     // Stable order: simple, standard, complex, reasoning, high_context, multimodal, then rest alpha.
-    let order = ["simple", "standard", "complex", "reasoning", "high_context", "multimodal"];
+    let order = [
+        "simple",
+        "standard",
+        "complex",
+        "reasoning",
+        "high_context",
+        "multimodal",
+    ];
     let mut keys: Vec<&String> = tiers.keys().collect();
     keys.sort_by_key(|k| {
         order

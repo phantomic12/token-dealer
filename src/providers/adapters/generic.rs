@@ -24,7 +24,12 @@ impl GenericAdapter {
         base_url: impl Into<String>,
         default_model: impl Into<String>,
     ) -> Self {
-        Self::with_path(id, base_url, "/v1/chat/completions".to_string(), default_model)
+        Self::with_path(
+            id,
+            base_url,
+            "/v1/chat/completions".to_string(),
+            default_model,
+        )
     }
 
     pub fn with_path(
@@ -87,9 +92,7 @@ impl ProviderAdapter for GenericAdapter {
                 .content
                 .iter()
                 .filter_map(|b| match b {
-                    crate::schema::canonical::ContentBlock::Text { text } => {
-                        Some(text.as_str())
-                    }
+                    crate::schema::canonical::ContentBlock::Text { text } => Some(text.as_str()),
                     _ => None,
                 })
                 .collect::<Vec<_>>()
@@ -173,10 +176,8 @@ impl ProviderAdapter for GenericAdapter {
             let usage = v
                 .get("usage")
                 .map(|u| crate::schema::canonical::Usage {
-                    input_tokens: u
-                        .get("prompt_tokens")
-                        .and_then(|x| x.as_u64())
-                        .unwrap_or(0) as u32,
+                    input_tokens: u.get("prompt_tokens").and_then(|x| x.as_u64()).unwrap_or(0)
+                        as u32,
                     output_tokens: u
                         .get("completion_tokens")
                         .and_then(|x| x.as_u64())
@@ -211,7 +212,10 @@ impl ProviderAdapter for GenericAdapter {
         let mut body = self.build_body(req);
         if let Value::Object(ref mut m) = body {
             m.insert("stream".to_string(), Value::Bool(true));
-            m.insert("stream_options".to_string(), serde_json::json!({"include_usage": true}),);
+            m.insert(
+                "stream_options".to_string(),
+                serde_json::json!({"include_usage": true}),
+            );
         }
 
         Box::pin(async move {
@@ -277,9 +281,16 @@ fn find_sse_boundary(buf: &[u8]) -> Option<usize> {
 /// Parse a single OpenAI-compat SSE chunk into a CanonicalChunk.
 /// Used by the generic streaming path — no model_id stamping, no
 /// provider_id stamp. The caller fills those in.
-fn parse_openai_compat_chunk(v: &Value, model_id: &str) -> Option<crate::schema::canonical::CanonicalChunk> {
+fn parse_openai_compat_chunk(
+    v: &Value,
+    model_id: &str,
+) -> Option<crate::schema::canonical::CanonicalChunk> {
     use crate::schema::canonical::{CanonicalChunk, ContentDelta};
-    let id = v.get("id").and_then(|x| x.as_str()).unwrap_or_default().to_string();
+    let id = v
+        .get("id")
+        .and_then(|x| x.as_str())
+        .unwrap_or_default()
+        .to_string();
     let choice = v.get("choices")?.as_array()?.first()?;
     let delta = choice.get("delta")?;
     let text = delta
@@ -291,7 +302,11 @@ fn parse_openai_compat_chunk(v: &Value, model_id: &str) -> Option<crate::schema:
         .and_then(|x| x.as_array())
         .and_then(|arr| arr.first())
         .map(|tc| crate::schema::canonical::CanonicalToolCall {
-            id: tc.get("id").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            id: tc
+                .get("id")
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .to_string(),
             name: tc
                 .get("function")
                 .and_then(|f| f.get("name"))
@@ -310,10 +325,7 @@ fn parse_openai_compat_chunk(v: &Value, model_id: &str) -> Option<crate::schema:
         .and_then(|x| x.as_str())
         .map(String::from);
     let usage = v.get("usage").map(|u| crate::schema::canonical::Usage {
-        input_tokens: u
-            .get("prompt_tokens")
-            .and_then(|x| x.as_u64())
-            .unwrap_or(0) as u32,
+        input_tokens: u.get("prompt_tokens").and_then(|x| x.as_u64()).unwrap_or(0) as u32,
         output_tokens: u
             .get("completion_tokens")
             .and_then(|x| x.as_u64())

@@ -51,15 +51,11 @@ impl HealthRegistry {
 
     pub async fn record_success(&self, provider_id: &str) {
         let mut g = self.inner.write().await;
-        g.entry(provider_id.to_string())
-            .or_default()
-            .status = ProviderHealthState::Healthy;
+        g.entry(provider_id.to_string()).or_default().status = ProviderHealthState::Healthy;
         g.entry(provider_id.to_string())
             .or_default()
             .consecutive_failures = 0;
-        g.entry(provider_id.to_string())
-            .or_default()
-            .cooldown_until = None;
+        g.entry(provider_id.to_string()).or_default().cooldown_until = None;
     }
 
     pub async fn record_failure(&self, provider_id: &str, threshold: u32, cooldown_secs: u64) {

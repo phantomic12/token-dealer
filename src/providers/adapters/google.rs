@@ -7,9 +7,9 @@
 //!   - streaming: GET-style with `?alt=sse` query param (POST still works)
 //!   - tool calls: `{functionCall: {name, args}}` parts (deferred to phase 2)
 
-use crate::providers::adapter::{Capability, ProviderAdapter, ProviderStream};
 use crate::error::AppError;
 use crate::error::AppResult;
+use crate::providers::adapter::{Capability, ProviderAdapter, ProviderStream};
 use crate::schema::canonical::*;
 use async_stream::try_stream;
 use futures::future::BoxFuture;
@@ -107,7 +107,9 @@ impl ProviderAdapter for GoogleAdapter {
                         ImageData::Url { url } => {
                             // Gemini's REST API doesn't accept URLs directly
                             // for images. Caller must inline. Skip silently.
-                            tracing::warn!("skipping image URL (Gemini requires inline data): {url}");
+                            tracing::warn!(
+                                "skipping image URL (Gemini requires inline data): {url}"
+                            );
                             None
                         }
                     },
@@ -367,7 +369,9 @@ fn parse_google_response(
             {
                 for part in parts {
                     if let Some(t) = part.get("text").and_then(|x| x.as_str()) {
-                        content.push(ContentBlock::Text { text: t.to_string() });
+                        content.push(ContentBlock::Text {
+                            text: t.to_string(),
+                        });
                     }
                 }
             }

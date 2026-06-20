@@ -325,7 +325,10 @@ impl UserStore {
         Ok((key, plaintext))
     }
 
-    pub async fn get_user_by_api_key(&self, plaintext: &str) -> anyhow::Result<Option<(User, ApiKey)>> {
+    pub async fn get_user_by_api_key(
+        &self,
+        plaintext: &str,
+    ) -> anyhow::Result<Option<(User, ApiKey)>> {
         let hash = sha256_hex(plaintext);
         self.db
             .with(move |c| {
@@ -372,10 +375,7 @@ impl UserStore {
         let key_id = key_id.to_string();
         self.db
             .with(move |c| {
-                c.execute(
-                    "UPDATE api_keys SET revoked = 1 WHERE id = ?",
-                    [&key_id],
-                )?;
+                c.execute("UPDATE api_keys SET revoked = 1 WHERE id = ?", [&key_id])?;
                 Ok(())
             })
             .await

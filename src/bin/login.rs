@@ -249,9 +249,7 @@ async fn main() -> anyhow::Result<()> {
     let provider = provider_idx
         .and_then(|i| args.get(i).cloned())
         .ok_or_else(|| {
-            anyhow::anyhow!(
-                "missing provider name. Run `token-dealer-login --help` for usage."
-            )
+            anyhow::anyhow!("missing provider name. Run `token-dealer-login --help` for usage.")
         })?;
 
     // Anthropic uses the paste-code flow. Print the URL + instructions.
@@ -367,9 +365,7 @@ fn run_anthropic_paste(server: &str, print_only: bool) -> anyhow::Result<()> {
         .get("refresh_token")
         .and_then(|x| x.as_str())
         .ok_or_else(|| {
-            anyhow::anyhow!(
-                "Anthropic response missing refresh_token. Re-run the paste flow."
-            )
+            anyhow::anyhow!("Anthropic response missing refresh_token. Re-run the paste flow.")
         })?
         .to_string();
     push_refresh_token(server, "anthropic", &refresh, None, None)?;
@@ -389,7 +385,11 @@ fn run_device_flow(server: &str, provider: &str, print_only: bool) -> anyhow::Re
         provider
     ))?;
     if !(200..300).contains(&start.status()) {
-        anyhow::bail!("device flow start failed: {} {}", start.status(), start.into_string()?);
+        anyhow::bail!(
+            "device flow start failed: {} {}",
+            start.status(),
+            start.into_string()?
+        );
     }
     let body: Value = start.into_json()?;
     let device_code = body
@@ -423,7 +423,10 @@ fn run_device_flow(server: &str, provider: &str, print_only: bool) -> anyhow::Re
         loop {
             tokio::time::sleep(Duration::from_secs(3)).await;
             let poll = client
-                .post(format!("{}/admin/oauth/device/poll", server.trim_end_matches('/')))
+                .post(format!(
+                    "{}/admin/oauth/device/poll",
+                    server.trim_end_matches('/')
+                ))
                 .json(&json!({ "device_code": device_code }))
                 .send()
                 .await?;
@@ -554,13 +557,7 @@ async fn run_popup_flow(
                 .to_string();
             // Some providers return an `access_token` here; the
             // server can also accept a refresh_token directly.
-            push_refresh_token(
-                server,
-                provider,
-                &refresh,
-                None,
-                None,
-            )?;
+            push_refresh_token(server, provider, &refresh, None, None)?;
             println!("✓ {provider} refresh_token stored on {server}.");
         }
         CallbackResult::Error(e) => {
@@ -615,17 +612,12 @@ async fn accept_callback(
             "<html><body style='font-family:sans-serif'><h1>OAuth error</h1>\
              <p>Provider returned <code>{error}</code>. You can close this window.</p></body></html>"
         );
-        let _ = write_response(
-            &mut writer,
-            400,
-            "text/html",
-            &body,
-        )
-        .await;
+        let _ = write_response(&mut writer, 400, "text/html", &body).await;
         return Ok(CallbackResult::Error(format!("provider error: {error}")));
     }
     if state != expected_state {
-        let body = "<html><body><h1>State mismatch</h1><p>You can close this window.</p></body></html>";
+        let body =
+            "<html><body><h1>State mismatch</h1><p>You can close this window.</p></body></html>";
         let _ = write_response(&mut writer, 400, "text/html", body).await;
         return Ok(CallbackResult::Error(
             "state mismatch (different browser session?)".into(),
@@ -671,7 +663,11 @@ fn push_refresh_token(
     registered_client_id: Option<&str>,
     registered_client_secret: Option<&str>,
 ) -> anyhow::Result<()> {
-    let url = format!("{}/admin/oauth/{}/setup", server.trim_end_matches('/'), provider);
+    let url = format!(
+        "{}/admin/oauth/{}/setup",
+        server.trim_end_matches('/'),
+        provider
+    );
     let mut body = json!({
         "refresh_token": refresh,
     });
@@ -736,8 +732,7 @@ fn random_token(len: usize) -> String {
     // on the raw RNG output avoids the lossiness of from_utf8_lossy
     // which would emit U+FFFD replacement chars that double-encode
     // to %EF%BF%BD inside urlenc().
-    const ALPHABET: &[u8] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
     let mut buf = vec![0u8; len];
     rand::Rng::fill(&mut rand::thread_rng(), &mut buf[..]);
     buf.iter()

@@ -1,13 +1,13 @@
 //! HTTP handlers. Thin — most logic lives in `proxy/pipeline.rs`.
 
 use super::AppState;
+use async_stream::stream;
 use axum::{
     extract::State,
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     Json,
 };
-use async_stream::stream;
 use futures::StreamExt;
 use serde_json::{json, Value};
 
@@ -26,7 +26,11 @@ pub async fn health() -> impl IntoResponse {
 /// total tokens, total USD cost, top providers. Updated continuously
 /// from the token_usage + request_log tables.
 pub async fn public_stats(State(state): State<AppState>) -> Response {
-    let (input, output, cost, reqs) = state.user_store.get_global_usage_today().await.unwrap_or((0, 0, 0.0, 0));
+    let (input, output, cost, reqs) = state
+        .user_store
+        .get_global_usage_today()
+        .await
+        .unwrap_or((0, 0, 0.0, 0));
     let snap = state.config.snapshot().await;
     let provider_count = snap.providers.len();
     Json(json!({
@@ -243,11 +247,7 @@ pub async fn chat_completions(
     let provider_id = routed.route.provider_id.clone();
     let model_id = routed.route.model_id.clone();
     let request_id = routed.request_id;
-    let specificity_for_header = routed
-        .canonical
-        .metadata
-        .specificity_category
-        .clone();
+    let specificity_for_header = routed.canonical.metadata.specificity_category.clone();
 
     // Per-request key override: `X-Router-Key: <key>` bypasses the
     // resolved key. Used to swap in a different upstream key without

@@ -15,7 +15,9 @@ use axum::{
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::config::types::{DetectionCondition, DetectionRule, ProviderConfig, ProviderType, TierConfig};
+use crate::config::types::{
+    DetectionCondition, DetectionRule, ProviderConfig, ProviderType, TierConfig,
+};
 
 pub async fn add_provider(
     State(state): State<AppState>,
@@ -36,7 +38,10 @@ pub async fn add_provider(
 
     match result {
         Ok(_) => match state.pipeline.registry.add(&body).await {
-            Ok(_) => (StatusCode::CREATED, Json(json!({"status": "added", "id": body.id})))
+            Ok(_) => (
+                StatusCode::CREATED,
+                Json(json!({"status": "added", "id": body.id})),
+            )
                 .into_response(),
             Err(e) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -52,10 +57,7 @@ pub async fn add_provider(
     }
 }
 
-pub async fn remove_provider(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Response {
+pub async fn remove_provider(State(state): State<AppState>, Path(id): Path<String>) -> Response {
     if id.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
@@ -133,7 +135,11 @@ pub async fn update_tier(
         })
         .await;
     match result {
-        Ok(_) => (StatusCode::OK, Json(json!({"status": "updated", "tier": tier}))).into_response(),
+        Ok(_) => (
+            StatusCode::OK,
+            Json(json!({"status": "updated", "tier": tier})),
+        )
+            .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"error": format!("save failed: {e}")})),
@@ -172,7 +178,11 @@ pub async fn set_key(
             .into_response();
     }
     match state.key_store.set(&provider_id, &body.key).await {
-        Ok(_) => (StatusCode::OK, Json(json!({"status": "stored", "provider": provider_id}))).into_response(),
+        Ok(_) => (
+            StatusCode::OK,
+            Json(json!({"status": "stored", "provider": provider_id})),
+        )
+            .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"error": format!("store failed: {e}")})),
@@ -186,7 +196,11 @@ pub async fn delete_key(
     axum::extract::Path(provider_id): axum::extract::Path<String>,
 ) -> Response {
     match state.key_store.delete(&provider_id).await {
-        Ok(_) => (StatusCode::OK, Json(json!({"status": "deleted", "provider": provider_id}))).into_response(),
+        Ok(_) => (
+            StatusCode::OK,
+            Json(json!({"status": "deleted", "provider": provider_id})),
+        )
+            .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"error": format!("delete failed: {e}")})),
@@ -251,7 +265,11 @@ pub async fn start_oauth(
         .map(String::from);
     let redirect_uri =
         explicit_redirect.unwrap_or_else(|| rebuild_redirect_uri(&config_redirect, &provider_id));
-    match state.oauth.start_popup_oauth(&provider_id, &redirect_uri).await {
+    match state
+        .oauth
+        .start_popup_oauth(&provider_id, &redirect_uri)
+        .await
+    {
         Ok((url, _state)) => {
             // GET: redirect the browser straight to the consent
             // page. POST: return the URL as JSON so JS can open it
@@ -440,11 +458,9 @@ pub async fn setup_oauth_via_cli(
         .and_then(|v| v.as_str())
         .map(String::from);
     let stored = match (&registered_cid, &registered_cs) {
-        (Some(cid), Some(cs)) => crate::oauth::serialize_stored_refresh(
-            &refresh,
-            Some(cid.as_str()),
-            Some(cs.as_str()),
-        ),
+        (Some(cid), Some(cs)) => {
+            crate::oauth::serialize_stored_refresh(&refresh, Some(cid.as_str()), Some(cs.as_str()))
+        }
         _ => refresh.clone(),
     };
     if let Err(e) = state
@@ -528,10 +544,7 @@ pub struct AddRuleRequest {
     pub tier: String,
 }
 
-pub async fn add_rule(
-    State(state): State<AppState>,
-    Json(body): Json<AddRuleRequest>,
-) -> Response {
+pub async fn add_rule(State(state): State<AppState>, Json(body): Json<AddRuleRequest>) -> Response {
     if crate::schema::canonical::Tier::parse(&body.tier).is_none() {
         return (
             StatusCode::BAD_REQUEST,
@@ -582,7 +595,11 @@ pub async fn delete_rule(
         })
         .await;
     match result {
-        Ok(_) => (StatusCode::OK, Json(json!({"status": "deleted", "index": index}))).into_response(),
+        Ok(_) => (
+            StatusCode::OK,
+            Json(json!({"status": "deleted", "index": index})),
+        )
+            .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"error": format!("save failed: {e}")})),
@@ -725,11 +742,7 @@ pub async fn test_provider(
         .unwrap_or(false);
 
     if body.id.is_empty() {
-        return html_test_result(
-            is_htmx,
-            false,
-            "id required".to_string(),
-        );
+        return html_test_result(is_htmx, false, "id required".to_string());
     }
     if state
         .config
@@ -755,51 +768,55 @@ pub async fn test_provider(
     let base_url = adapter.base_url().trim_end_matches('/').to_string();
 
     let req_result = match body.provider_type {
-        ProviderType::Anthropic => state
-            .pipeline
-            .http
-            .post(format!("{base_url}/v1/messages"))
-            .header("x-api-key", &key)
-            .header("anthropic-version", "2023-06-01")
-            .header("content-type", "application/json")
-            .json(&json!({
-                "model": adapter.default_model(),
-                "max_tokens": 1,
-                "messages": [{"role": "user", "content": "hi"}]
-            }))
-            .send()
-            .await,
-        ProviderType::Google => state
-            .pipeline
-            .http
-            .get(format!("{base_url}/v1beta/models"))
-            .header("x-goog-api-key", &key)
-            .send()
-            .await,
-        ProviderType::Kiro => state
-            .pipeline
-            .http
-            .get(format!("{base_url}/ping"))
-            .header("authorization", format!("Bearer {key}"))
-            .send()
-            .await,
-        _ => state
-            .pipeline
-            .http
-            .get(format!("{base_url}/v1/models"))
-            .header("authorization", format!("Bearer {key}"))
-            .send()
-            .await,
+        ProviderType::Anthropic => {
+            state
+                .pipeline
+                .http
+                .post(format!("{base_url}/v1/messages"))
+                .header("x-api-key", &key)
+                .header("anthropic-version", "2023-06-01")
+                .header("content-type", "application/json")
+                .json(&json!({
+                    "model": adapter.default_model(),
+                    "max_tokens": 1,
+                    "messages": [{"role": "user", "content": "hi"}]
+                }))
+                .send()
+                .await
+        }
+        ProviderType::Google => {
+            state
+                .pipeline
+                .http
+                .get(format!("{base_url}/v1beta/models"))
+                .header("x-goog-api-key", &key)
+                .send()
+                .await
+        }
+        ProviderType::Kiro => {
+            state
+                .pipeline
+                .http
+                .get(format!("{base_url}/ping"))
+                .header("authorization", format!("Bearer {key}"))
+                .send()
+                .await
+        }
+        _ => {
+            state
+                .pipeline
+                .http
+                .get(format!("{base_url}/v1/models"))
+                .header("authorization", format!("Bearer {key}"))
+                .send()
+                .await
+        }
     };
 
     let resp = match req_result {
         Ok(r) => r,
         Err(e) => {
-            return html_test_result(
-                is_htmx,
-                false,
-                format!("connection failed: {e}"),
-            );
+            return html_test_result(is_htmx, false, format!("connection failed: {e}"));
         }
     };
     let status = resp.status();
@@ -838,7 +855,11 @@ fn html_test_result(is_htmx: bool, ok: bool, message: String) -> Response {
         )
             .into_response()
     } else if ok {
-        (StatusCode::OK, Json(json!({"status": "ok", "message": message}))).into_response()
+        (
+            StatusCode::OK,
+            Json(json!({"status": "ok", "message": message})),
+        )
+            .into_response()
     } else {
         (
             StatusCode::BAD_GATEWAY,

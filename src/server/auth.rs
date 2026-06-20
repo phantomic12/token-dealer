@@ -25,11 +25,7 @@ use base64::Engine as _;
 const SESSION_COOKIE: &str = "td_session";
 const SESSION_TTL_HOURS: i64 = 24 * 30; // 30 days
 
-pub async fn middleware(
-    State(state): State<AppState>,
-    mut req: Request,
-    next: Next,
-) -> Response {
+pub async fn middleware(State(state): State<AppState>, mut req: Request, next: Next) -> Response {
     let snap = state.config.snapshot().await;
 
     // Try multi-user API key first.
@@ -76,9 +72,7 @@ pub async fn middleware(
         }
         // Legacy env-var password.
         if let Ok(admin_pw) = std::env::var("TOKEN_DEALER_ADMIN_PASSWORD") {
-            if !admin_pw.is_empty()
-                && constant_time_eq(presented.as_bytes(), admin_pw.as_bytes())
-            {
+            if !admin_pw.is_empty() && constant_time_eq(presented.as_bytes(), admin_pw.as_bytes()) {
                 let ctx = UserContext {
                     user_id: "env-admin".to_string(),
                     email: "admin@env".to_string(),
@@ -102,8 +96,7 @@ pub async fn middleware(
     {
         for (k, v) in parse_cookies(cookie) {
             if k == SESSION_COOKIE {
-                if let Some((session, user)) =
-                    state.user_store.get_session(&v).await.ok().flatten()
+                if let Some((session, user)) = state.user_store.get_session(&v).await.ok().flatten()
                 {
                     let ctx = UserContext {
                         user_id: user.id,

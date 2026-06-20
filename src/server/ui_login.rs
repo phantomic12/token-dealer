@@ -6,10 +6,10 @@
 //! the first admin user, then redirect to /ui/login.
 
 use crate::auth::{Role, User, UserContext, UserStore};
-use crate::server::AppState;
 use crate::server::auth as mw;
 use crate::server::auth_endpoints;
 use crate::server::ui::layout;
+use crate::server::AppState;
 use axum::extract::{Query, State};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};

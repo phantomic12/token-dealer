@@ -47,10 +47,7 @@ impl Telemetry {
                 .with_endpoint(ep)
                 .build()
                 .ok()?;
-            let resource = Resource::new(vec![KeyValue::new(
-                SERVICE_NAME,
-                "token-dealer",
-            )]);
+            let resource = Resource::new(vec![KeyValue::new(SERVICE_NAME, "token-dealer")]);
             let p = TracerProvider::builder()
                 .with_batch_exporter(exporter, opentelemetry_sdk::runtime::Tokio)
                 .with_resource(resource)

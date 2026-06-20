@@ -116,7 +116,10 @@ fn build_adapter(cfg: &ProviderConfig) -> anyhow::Result<Arc<dyn ProviderAdapter
         .clone()
         .or_else(|| meta.map(|m| m.base_url.to_string()))
         .ok_or_else(|| {
-            anyhow::anyhow!("provider {} has no base_url (use a non-Generic type)", cfg.id)
+            anyhow::anyhow!(
+                "provider {} has no base_url (use a non-Generic type)",
+                cfg.id
+            )
         })?;
     let default_model = cfg
         .default_model
@@ -130,11 +133,9 @@ fn build_adapter(cfg: &ProviderConfig) -> anyhow::Result<Arc<dyn ProviderAdapter
         .unwrap_or_else(|| "/v1/chat/completions".to_string());
 
     Ok(match cfg.provider_type {
-        ProviderType::Anthropic => Arc::new(AnthropicAdapter::new(
-            &cfg.id,
-            base_url,
-            default_model,
-        )),
+        ProviderType::Anthropic => {
+            Arc::new(AnthropicAdapter::new(&cfg.id, base_url, default_model))
+        }
         ProviderType::Google => Arc::new(GoogleAdapter::new(&cfg.id, base_url, default_model)),
         ProviderType::Kiro => Arc::new(KiroAdapter::new(&cfg.id, base_url, default_model)),
         ProviderType::Responses => {

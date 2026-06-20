@@ -15,9 +15,19 @@ use super::super::schema::inbound::InboundRequest;
 
 const HIGH_CONTEXT_TOKENS: u32 = 50_000;
 const REASONING_KEYWORDS: &[&str] = &[
-    "prove", "proof", "formally", "theorem", "lemma", "axiom",
-    "derive", "deduce", "step by step", "chain of thought",
-    "mathematically", "logically valid", "sound and complete",
+    "prove",
+    "proof",
+    "formally",
+    "theorem",
+    "lemma",
+    "axiom",
+    "derive",
+    "deduce",
+    "step by step",
+    "chain of thought",
+    "mathematically",
+    "logically valid",
+    "sound and complete",
 ];
 
 const CODE_FENCE: &str = "```";
@@ -50,7 +60,10 @@ impl Scorer {
         if let Some(h) = ctx.headers.get("x-router-tier") {
             if let Ok(s) = h.to_str() {
                 if let Some(t) = Tier::parse(s) {
-                    return ScoreResult { tier: t, model_override: None };
+                    return ScoreResult {
+                        tier: t,
+                        model_override: None,
+                    };
                 }
             }
         }
@@ -114,7 +127,13 @@ impl Scorer {
 
         // 4. User rules (in order, first match wins; otherwise floor up)
         for rule in &cfg.detection.rules {
-            if rule_matches(&rule.condition, &ctx.inbound, approx_tokens, tools_present, has_image) {
+            if rule_matches(
+                &rule.condition,
+                &ctx.inbound,
+                approx_tokens,
+                tools_present,
+                has_image,
+            ) {
                 if let Some(t) = Tier::parse(&rule.tier) {
                     if tier_rank(t) > tier_rank(tier) {
                         tier = t;
@@ -132,7 +151,10 @@ impl Scorer {
             }
         }
 
-        ScoreResult { tier, model_override: None }
+        ScoreResult {
+            tier,
+            model_override: None,
+        }
     }
 }
 
@@ -191,9 +213,7 @@ fn has_reasoning_keywords(messages: &[crate::schema::inbound::InboundMessage]) -
         })
         .collect::<Vec<_>>()
         .join(" ");
-    REASONING_KEYWORDS
-        .iter()
-        .any(|kw| combined.contains(kw))
+    REASONING_KEYWORDS.iter().any(|kw| combined.contains(kw))
 }
 
 /// Approximate token count from raw text using tiktoken-rs. Picks
@@ -246,11 +266,16 @@ fn rule_matches(
             })
             .collect::<Vec<_>>()
             .join(" ");
-        if !keywords.iter().all(|kw| combined.contains(&kw.to_lowercase())) {
+        if !keywords
+            .iter()
+            .all(|kw| combined.contains(&kw.to_lowercase()))
+        {
             return false;
         }
     }
-    if has_image && cond.has_tools.is_none() && cond.input_tokens_gt.is_none()
+    if has_image
+        && cond.has_tools.is_none()
+        && cond.input_tokens_gt.is_none()
         && cond.prompt_contains.is_none()
     {
         // Empty condition matches everything; skip the false positive.

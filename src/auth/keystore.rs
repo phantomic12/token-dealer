@@ -35,7 +35,10 @@ impl MasterKey {
         if let Ok(path) = std::env::var("ROUTER_MASTER_KEY_FILE") {
             let bytes = std::fs::read(&path)?;
             return Self::from_slice(&bytes).ok_or_else(|| {
-                anyhow::anyhow!("ROUTER_MASTER_KEY_FILE is not 32 bytes (got {})", bytes.len())
+                anyhow::anyhow!(
+                    "ROUTER_MASTER_KEY_FILE is not 32 bytes (got {})",
+                    bytes.len()
+                )
             });
         }
         // Try direct env (hex or raw)
@@ -191,11 +194,7 @@ impl KeyStore {
 
 /// Combined resolver: returns the configured plaintext from TOML
 /// if present, else the encrypted store, else empty.
-pub async fn resolve(
-    store: &KeyStore,
-    provider_id: &str,
-    literal: Option<&str>,
-) -> String {
+pub async fn resolve(store: &KeyStore, provider_id: &str, literal: Option<&str>) -> String {
     if let Some(lit) = literal {
         if let Some(inner) = lit.strip_prefix("${").and_then(|s| s.strip_suffix('}')) {
             if let Ok(v) = std::env::var(inner) {

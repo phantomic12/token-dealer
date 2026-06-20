@@ -103,9 +103,7 @@ pub async fn check(
             return Ok(BudgetDecision::Deny {
                 reason: format!(
                     "daily spend ${:.4} + request ${:.4} exceeds cap ${:.4}",
-                    today,
-                    request_cost_usd,
-                    cfg.daily_cost_usd
+                    today, request_cost_usd, cfg.daily_cost_usd
                 ),
             });
         }

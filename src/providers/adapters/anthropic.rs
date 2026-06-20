@@ -26,7 +26,11 @@ pub struct AnthropicAdapter {
 }
 
 impl AnthropicAdapter {
-    pub fn new(id: impl Into<String>, base_url: impl Into<String>, default_model: impl Into<String>) -> Self {
+    pub fn new(
+        id: impl Into<String>,
+        base_url: impl Into<String>,
+        default_model: impl Into<String>,
+    ) -> Self {
         Self {
             id: id.into(),
             base_url: base_url.into(),
@@ -68,11 +72,7 @@ impl ProviderAdapter for AnthropicAdapter {
     }
 
     fn build_body(&self, req: &CanonicalRequest) -> Value {
-        let messages: Vec<Value> = req
-            .messages
-            .iter()
-            .map(message_to_anthropic)
-            .collect();
+        let messages: Vec<Value> = req.messages.iter().map(message_to_anthropic).collect();
 
         let mut body = json!({
             "model": req.selected_model,
@@ -94,16 +94,14 @@ impl ProviderAdapter for AnthropicAdapter {
             body["stop_sequences"] = json!(stop);
         }
         if let Some(tools) = &req.tools {
-            body["tools"] = json!(
-                tools
-                    .iter()
-                    .map(|t| json!({
-                        "name": t.name,
-                        "description": t.description,
-                        "input_schema": t.parameters,
-                    }))
-                    .collect::<Vec<_>>()
-            );
+            body["tools"] = json!(tools
+                .iter()
+                .map(|t| json!({
+                    "name": t.name,
+                    "description": t.description,
+                    "input_schema": t.parameters,
+                }))
+                .collect::<Vec<_>>());
         }
         if let Some(tc) = &req.tool_choice {
             body["tool_choice"] = json!(match tc {
@@ -363,7 +361,10 @@ fn message_to_anthropic(msg: &CanonicalMessage) -> Value {
                 .content
                 .iter()
                 .filter_map(|b| match b {
-                    ContentBlock::ToolResult { tool_use_id, content } => Some(json!({
+                    ContentBlock::ToolResult {
+                        tool_use_id,
+                        content,
+                    } => Some(json!({
                         "type": "tool_result",
                         "tool_use_id": tool_use_id,
                         "content": content
@@ -407,20 +408,38 @@ fn blocks_to_anthropic_content(blocks: &[ContentBlock]) -> Value {
 }
 
 fn parse_anthropic_response(v: &Value, provider_id: &str) -> AppResult<CanonicalResponse> {
-    let id = v.get("id").and_then(|x| x.as_str()).unwrap_or_default().to_string();
-    let model = v.get("model").and_then(|x| x.as_str()).unwrap_or_default().to_string();
+    let id = v
+        .get("id")
+        .and_then(|x| x.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let model = v
+        .get("model")
+        .and_then(|x| x.as_str())
+        .unwrap_or_default()
+        .to_string();
     let mut content = Vec::new();
     if let Some(arr) = v.get("content").and_then(|x| x.as_array()) {
         for block in arr {
             match block.get("type").and_then(|t| t.as_str()) {
                 Some("text") => {
                     if let Some(t) = block.get("text").and_then(|t| t.as_str()) {
-                        content.push(ContentBlock::Text { text: t.to_string() });
+                        content.push(ContentBlock::Text {
+                            text: t.to_string(),
+                        });
                     }
                 }
                 Some("tool_use") => {
-                    let id = block.get("id").and_then(|x| x.as_str()).unwrap_or_default().to_string();
-                    let name = block.get("name").and_then(|x| x.as_str()).unwrap_or_default().to_string();
+                    let id = block
+                        .get("id")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                    let name = block
+                        .get("name")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or_default()
+                        .to_string();
                     let input = block.get("input").cloned().unwrap_or(Value::Null);
                     content.push(ContentBlock::ToolUse { id, name, input });
                 }
@@ -428,13 +447,25 @@ fn parse_anthropic_response(v: &Value, provider_id: &str) -> AppResult<Canonical
             }
         }
     }
-    let finish_reason = v.get("stop_reason").and_then(|x| x.as_str()).map(String::from);
-    let usage = v.get("usage").map(|u| Usage {
-        input_tokens: u.get("input_tokens").and_then(|x| x.as_u64()).unwrap_or(0) as u32,
-        output_tokens: u.get("output_tokens").and_then(|x| x.as_u64()).unwrap_or(0) as u32,
-        cache_read_tokens: u.get("cache_read_input_tokens").and_then(|x| x.as_u64()).map(|x| x as u32),
-        cache_write_tokens: u.get("cache_creation_input_tokens").and_then(|x| x.as_u64()).map(|x| x as u32),
-    }).unwrap_or_default();
+    let finish_reason = v
+        .get("stop_reason")
+        .and_then(|x| x.as_str())
+        .map(String::from);
+    let usage = v
+        .get("usage")
+        .map(|u| Usage {
+            input_tokens: u.get("input_tokens").and_then(|x| x.as_u64()).unwrap_or(0) as u32,
+            output_tokens: u.get("output_tokens").and_then(|x| x.as_u64()).unwrap_or(0) as u32,
+            cache_read_tokens: u
+                .get("cache_read_input_tokens")
+                .and_then(|x| x.as_u64())
+                .map(|x| x as u32),
+            cache_write_tokens: u
+                .get("cache_creation_input_tokens")
+                .and_then(|x| x.as_u64())
+                .map(|x| x as u32),
+        })
+        .unwrap_or_default();
 
     Ok(CanonicalResponse {
         id,
