@@ -14,6 +14,7 @@ use super::handlers::{
 };
 use super::middleware::request_id_layer;
 use super::multimodal::{audio_speech, image_generations, video_generations};
+use super::passthrough::{messages_passthrough, responses_passthrough};
 use super::ui::{
     dashboard, index, logs_page, oauth_done_page, playground_page, playground_send,
     providers_new_step1, providers_new_step2, providers_page, providers_partial, rules_page,
@@ -33,6 +34,8 @@ pub fn build_router(state: AppState) -> Router {
     Router::new()
         // Public API
         .route("/v1/chat/completions", post(chat_completions))
+        .route("/v1/messages", post(messages_passthrough))
+        .route("/v1/responses", post(responses_passthrough))
         .route("/v1/models", get(list_models))
         .route("/v1/images/generations", post(image_generations))
         .route("/v1/audio/speech", post(audio_speech))

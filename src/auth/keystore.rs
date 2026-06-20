@@ -380,7 +380,6 @@ pub async fn resolve(
     }
 }
 
-// Re-export the canonical AppError for the few places that need it.
 #[allow(dead_code)]
 fn _err() -> AppError {
     AppError::Internal("x".into())
