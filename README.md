@@ -180,3 +180,101 @@ What's next (phase 2):
 ## License
 
 MIT
+
+
+## v0.2.0 — Production hardening
+
+Release series: P1 (foundation) → P2 (safety) → P3 (features + docs) → rc1 → final.
+See `.ai/plans/v0.2.0-hardening.md` for the full plan and 27-turn grill-me interview.
+
+### Production checklist
+
+Before exposing the proxy to the public internet:
+
+1. **Generate a master key**: `head -c 32 /dev/urandom | base64`. Set it as
+   `ROUTER_MASTER_KEY` (or point `ROUTER_MASTER_KEY_FILE` at a file with the
+   bytes). Without this, `[auth] enabled = true` refuses to start.
+2. **Enable auth**: `[auth] enabled = true` in `token-dealer.toml`.
+3. **Add real API keys**: either as `[[auth.keys]].key = "sk-..."` (plaintext)
+   or `key = "enc:<base64>"` after running through the encrypted path.
+4. **Set rate limits per person**: `[ratelimit].per_key.refill_per_minute` (default 60,
+   burst 120) and `global.refill_per_minute` (default 600, burst 1200).
+5. **Set cost budgets**: `[budgets].daily_cost_usd` and `per_request_cost_usd`
+   so a runaway client can't drain a budget.
+6. **Put behind a reverse proxy** (nginx, caddy, traefik) for TLS
+   termination. token-dealer speaks plain HTTP on the wire by design.
+7. **Pin a version**: use a specific image tag (`v0.2.0` not `latest`).
+8. **Set log retention**: `[log_retention_days]` defaults to forever; pick
+   something sane for your storage budget.
+9. **Disable unused features**: `[discovery].enabled = false` if you don't
+   want the background model-list sync. `[pricing_sync].enabled = false`
+   if you don't want the OpenRouter price catalog.
+10. **Read `SECURITY.md`**: support window, disclosure process, what the
+    proxy does and does not promise.
+
+### Upgrading from v0.1.x
+
+Drop the new binary in. On first start, token-dealer detects the
+v0.1.x config shape (no `[ratelimit]` section, plaintext `[[auth.keys]]`
+values) and rewrites it in place:
+
+- Original file → `token-dealer.toml.v0.1.bak` (only written if not
+  already present — first migration wins).
+- Adds an empty `[ratelimit]` section with the v0.2.0 defaults.
+- If `ROUTER_MASTER_KEY` is set, encrypts `[[auth.keys]].key` values
+  in place (writes `enc:<...>` back to disk). If not, leaves them
+  plaintext and logs a loud warning pointing at the env var.
+
+Migration is non-interactive — `docker compose up -d` in a non-TTY
+shell works. If the rewrite fails for any reason, the server logs
+the error and continues with the on-disk config as-is. Use
+`token-dealer check` for a dry-run validation.
+
+### Security model
+
+Promised (when `[auth] enabled = true`):
+- Bearer auth on `/v1/*` (and Basic on `/ui/*` + `/admin/*`).
+- Encrypted API keys at rest when `ROUTER_MASTER_KEY` is set
+  (AES-256-GCM, per-purpose HKDF subkeys).
+- Per-API-key + global rate limits, OpenAI-shape 429 with
+  `Retry-After`.
+- Per-day + per-request USD cost caps, OpenAI-shape 429.
+- SQLite audit log of every request (input tokens, output tokens,
+  cost, latency, provider, request id, user).
+- Argon2 password hashing for the admin user; rotate via
+  `POST /admin/auth/rotate-password`.
+- API keys shown once on create, only the sha256 prefix stored.
+
+Not promised (deferred to v0.3+ or out of scope):
+- Zero-downtime upgrades. Restart briefly drops in-flight requests.
+- Horizontal scale / multi-region HA. Single instance per host.
+- Nation-state defense. No rate-limit evasion counter-measures
+  beyond the per-key bucket.
+- GDPR data-export / data-delete. The audit log retains user
+  identifiers; treat the database as in-scope for any compliance
+  effort.
+- Circuit breaker (deferred to v0.3).
+- Generic-adapter SSE (deferred to v0.3).
+- Cross-shape transpilation for `/v1/messages` + `/v1/responses`
+  (deferred to v0.3).
+
+### `/v1/*` endpoints
+
+| Path                    | Wire format in     | Auth       | Rate-limited |
+| ----------------------- | ------------------ | ---------- | ------------ |
+| `/v1/chat/completions`  | OpenAI Chat        | Bearer     | yes          |
+| `/v1/messages`          | Anthropic Messages | Bearer     | yes          |
+| `/v1/responses`         | OpenAI Responses   | Bearer     | yes          |
+| `/v1/models`            | OpenAI             | Bearer     | no           |
+| `/v1/images/generations`| OpenAI Images      | Bearer     | no           |
+| `/v1/audio/speech`      | OpenAI Audio       | Bearer     | no           |
+| `/v1/videos/generations`| OpenAI Videos      | Bearer     | no           |
+| `/v1/stats`             | n/a (aggregate)    | public     | no           |
+| `/health`, `/healthz`   | n/a (liveness)     | public     | no           |
+
+`/v1/messages` and `/v1/responses` are pass-through only in v0.2.0.
+The provider's adapter type must match the inbound wire format
+(Anthropic / Kiro for messages; OpenAI / OpenRouter for responses),
+otherwise the request returns 400 with a `wire_format_mismatch`
+error envelope. Use `/v1/chat/completions` for the universal shape
+with full cross-provider transpilation.
