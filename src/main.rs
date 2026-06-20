@@ -4,7 +4,7 @@ use anyhow::Context;
 use std::sync::Arc;
 use token_dealer::{
     auth::{KeyStore, MasterKey},
-    config::ConfigService,
+    config::{validate_config, ConfigService},
     db::Db,
     metadata::MetadataStore,
     providers::{HealthRegistry, ProviderRegistry},
@@ -19,6 +19,14 @@ async fn main() -> anyhow::Result<()> {
     // --healthcheck: used by Docker HEALTHCHECK. Exits 0 if /health responds.
     if std::env::args().any(|a| a == "--healthcheck") {
         return run_healthcheck();
+    }
+
+    // `token-dealer check [--config PATH]`: validate the config
+    // without starting the server. Used by CI, pre-deploy hooks,
+    // and the v0.2.0 upgrade flow. Exits 0 on clean, 1 on
+    // hard errors, 2 on warnings only.
+    if let Some(idx) = std::env::args().position(|a| a == "check") {
+        return run_check(idx);
     }
 
     init_tracing();
@@ -42,10 +50,12 @@ async fn main() -> anyhow::Result<()> {
         "token-dealer starting"
     );
 
-    let registry = Arc::new(ProviderRegistry::from_configs(&snapshot.providers).unwrap_or_else(|e| {
-        tracing::error!("provider registry build failed: {e}; starting empty");
-        ProviderRegistry::from_configs(&[]).unwrap()
-    }));
+    let registry = Arc::new(
+        ProviderRegistry::from_configs(&snapshot.providers).unwrap_or_else(|e| {
+            tracing::error!("provider registry build failed: {e}; starting empty");
+            ProviderRegistry::from_configs(&[]).unwrap()
+        }),
+    );
     let http = reqwest::Client::builder()
         .user_agent(concat!("token-dealer/", env!("CARGO_PKG_VERSION")))
         .build()
@@ -69,12 +79,10 @@ async fn main() -> anyhow::Result<()> {
                 }
                 let res = db_for_pruner
                     .with(move |conn| {
-                        Ok::<_, anyhow::Error>(
-                            conn.execute(
-                                "DELETE FROM request_log WHERE created_at < datetime('now', ?1)",
-                                rusqlite::params![format!("-{} days", days as i64)],
-                            )?,
-                        )
+                        Ok::<_, anyhow::Error>(conn.execute(
+                            "DELETE FROM request_log WHERE created_at < datetime('now', ?1)",
+                            rusqlite::params![format!("-{} days", days as i64)],
+                        )?)
                     })
                     .await;
                 match res {
@@ -119,8 +127,20 @@ async fn main() -> anyhow::Result<()> {
         );
     }
     let telemetry = token_dealer::telemetry::Telemetry::init();
-    let pipeline = Pipeline::new(registry, config.clone(), http, db.clone(), health.clone(), key_store.clone(), oauth.clone(), user_store.clone(), pricing.clone());
-    let state = AppState::new(pipeline, config, health, db, metadata, key_store, oauth, user_store, pricing, telemetry);
+    let pipeline = Pipeline::new(
+        registry,
+        config.clone(),
+        http,
+        db.clone(),
+        health.clone(),
+        key_store.clone(),
+        oauth.clone(),
+        user_store.clone(),
+        pricing.clone(),
+    );
+    let state = AppState::new(
+        pipeline, config, health, db, metadata, key_store, oauth, user_store, pricing, telemetry,
+    );
 
     let app = build_router(state);
     let listener = tokio::net::TcpListener::bind(&bind)
@@ -183,4 +203,84 @@ fn run_healthcheck() -> anyhow::Result<()> {
         Ok(_) => std::process::exit(0),
         Err(e) => anyhow::bail!("healthcheck failed: {e}"),
     }
+}
+
+/// `token-dealer check [--config PATH]`. Validates the config file
+/// and prints results. Returns Ok(()) on success; uses
+/// `std::process::exit` to set the right exit code so the
+/// caller can rely on `$?` rather than parsing stdout.
+fn run_check(arg_idx: usize) -> anyhow::Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+    let mut path: Option<String> = None;
+    let mut i = arg_idx + 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--config" | "-c" => {
+                i += 1;
+                if i >= args.len() {
+                    eprintln!("--config requires a path argument");
+                    std::process::exit(2);
+                }
+                path = Some(args[i].clone());
+            }
+            "-h" | "--help" => {
+                println!("token-dealer check [--config PATH]");
+                println!();
+                println!("Validate token-dealer.toml without starting the server.");
+                println!("Exit codes:");
+                println!("  0  config is clean (no errors, no warnings)");
+                println!("  1  config is invalid (would refuse to start)");
+                println!("  2  config is valid with warnings (will start)");
+                std::process::exit(0);
+            }
+            other => {
+                eprintln!("unknown argument: {other}");
+                std::process::exit(2);
+            }
+        }
+        i += 1;
+    }
+    let path = path
+        .or_else(|| std::env::var("TOKEN_DEALER_CONFIG").ok())
+        .unwrap_or_else(|| "token-dealer.toml".to_string());
+
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            println!("token-dealer check: {path}: file not found");
+            // Per the v0.2.0 plan (item 5 first-run semantics),
+            // a missing config is the auto-generate path on
+            // server start, not a validation failure here.
+            std::process::exit(2);
+        }
+        Err(e) => {
+            eprintln!("token-dealer check: {path}: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    let outcome = validate_config(&raw);
+
+    if !outcome.errors.is_empty() {
+        eprintln!("{}: {} error(s):", path, outcome.errors.len());
+        for e in &outcome.errors {
+            eprintln!("  error   {}: {}", e.path, e.reason);
+        }
+    }
+    if !outcome.warnings.is_empty() {
+        eprintln!("{}: {} warning(s):", path, outcome.warnings.len());
+        for w in &outcome.warnings {
+            eprintln!("  warn    {}: {}", w.path, w.reason);
+        }
+    }
+
+    if outcome.has_errors() {
+        std::process::exit(1);
+    }
+    if outcome.has_warnings() {
+        println!("{}: ok with warnings", path);
+        std::process::exit(2);
+    }
+    println!("{}: ok", path);
+    Ok(())
 }

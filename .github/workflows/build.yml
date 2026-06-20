@@ -13,8 +13,76 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
+  fmt-clippy:
+    name: fmt + clippy (strict)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry & target
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: >-
+            . -> target
+
+      # Hard-blocking per v0.2.0 plan item 7.1: fmt/clippy failures
+      # should gate the build, not print warnings. (Previously
+      # `continue-on-error: true` meant the workflow passed even when
+      # the codebase didn't compile cleanly — broken signal.)
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+  msrv:
+    name: MSRV check (1.75, non-blocking)
+    # Per v0.2.0 plan item 7.5: separate MSRV job so accidental MSRV
+    # breaks surface before they hit the stable job. Non-blocking
+    # so a transient MSRV break doesn't stop the entire pipeline;
+    # failures show up as a red ❌ on the PR and a check on the commit.
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust 1.75 (project MSRV)
+        uses: dtolnay/rust-toolchain@1.75
+
+      - name: Cache cargo registry & target
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: >-
+            . -> target
+
+      - name: cargo check (MSRV)
+        run: cargo check --all-targets --locked
+
+  audit:
+    name: cargo audit (non-blocking)
+    # Per v0.2.0 plan item 7.2: surface known CVEs in the dep tree.
+    # Non-blocking because transitive-dep CVEs can require upgrades
+    # that expand scope; triage before flipping to blocking. The
+    # plan's open-risks section calls this out explicitly.
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run cargo audit
+        uses: taiki-e/install-action@cargo-audit
+
+      - name: cargo audit
+        run: cargo audit
+
   test:
     name: test (linux/amd64)
+    needs: [fmt-clippy]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -27,14 +95,6 @@ jobs:
         with:
           workspaces: >-
             . -> target
-
-      - name: cargo fmt --check
-        run: cargo fmt --all -- --check
-        continue-on-error: true
-
-      - name: cargo clippy
-        run: cargo clippy --all-targets -- -D warnings
-        continue-on-error: true
 
       - name: cargo test
         run: cargo test --all-targets --locked
@@ -86,5 +146,77 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          provenance: false
+          # Per v0.2.0 plan item 7.3: SLSA-style supply chain metadata
+          # for the published image. False was the placeholder; flip
+          # to true now that the v0.2.0 release trains are real.
+          provenance: true
 
+  release:
+    # Per v0.2.0 plan item 7.4: single-binary distribution alongside
+    # the Docker image. Self-hosters who don't want Docker get a
+    # real executable; CI artifacts are also useful for ad-hoc
+    # verification on non-Linux dev machines.
+    name: release binaries (${{ matrix.target }})
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            archive: tar.gz
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            archive: tar.gz
+          - target: x86_64-apple-darwin
+            os: macos-13
+            archive: tar.gz
+          - target: aarch64-apple-darwin
+            os: macos-14
+            archive: tar.gz
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            archive: zip
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo registry & target
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: >-
+            . -> target
+
+      - name: Build release binary
+        run: cargo build --release --locked --target ${{ matrix.target }} --bin token-dealer
+
+      - name: Strip (linux/darwin)
+        if: matrix.archive == 'tar.gz'
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/token-dealer dist/token-dealer
+          strip dist/token-dealer || true
+          (cd dist && tar -czf token-dealer-${{ matrix.target }}.tar.gz token-dealer)
+
+      - name: Package (windows)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path dist -Force | Out-Null
+          Copy-Item target/${{ matrix.target }}/release/token-dealer.exe dist/token-dealer.exe
+          Compress-Archive -Path dist/token-dealer.exe -DestinationPath dist/token-dealer-${{ matrix.target }}.zip
+
+      - name: Upload release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: |
+            dist/token-dealer-${{ matrix.target }}.${{ matrix.archive }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

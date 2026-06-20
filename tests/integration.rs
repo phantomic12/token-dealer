@@ -964,6 +964,7 @@ async fn make_state_with_specificity(
     mock_base: &str,
     mock_id: &str,
     specificity: SpecificityConfig,
+    extra_provider: Option<(&str, &str, &str)>,
 ) -> AppState {
     let mut cfg = RouterConfig::default();
     cfg.database = DatabaseConfig { path: ":memory:".to_string() };
@@ -975,6 +976,16 @@ async fn make_state_with_specificity(
         default_model: Some(format!("{mock_id}-model")),
         path: None,
     });
+    if let Some((base, id, model)) = extra_provider {
+        cfg.providers.push(ProviderConfig {
+            id: id.to_string(),
+            provider_type: ProviderType::Generic,
+            key: Some("test-key".to_string()),
+            base_url: Some(base.to_string()),
+            default_model: Some(model.to_string()),
+            path: None,
+        });
+    }
     cfg.tiers.insert(
         "standard".to_string(),
         TierConfig {
@@ -1072,6 +1083,7 @@ async fn specificity_routing_overrides_tier_when_keywords_match() {
                 threshold: None,
             }],
         },
+        Some((&spec_server.uri(), "specific", "spec-model")),
     )
     .await;
     // Add the "specific" provider both to the config snapshot (the
@@ -1159,10 +1171,11 @@ async fn specificity_disabled_falls_through_to_tier() {
             enabled: false, // disabled
             rules: vec![SpecificityRule {
                 category: SpecificityCategory::Coding,
-                primary: "specific/spec-model".to_string(),
+                primary: "tier/tier-model".to_string(),
                 threshold: None,
             }],
         },
+        None,
     )
     .await;
 

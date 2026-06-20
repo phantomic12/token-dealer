@@ -3,6 +3,7 @@
 //! Hot-reload from disk is wired in; UI-driven reload is phase 2.
 
 use super::types::RouterConfig;
+use super::validate::{validate as validate_toml, ValidationOutcome};
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -16,15 +17,31 @@ pub struct ConfigService {
 impl ConfigService {
     /// Load from a TOML file. Missing file → defaults. Missing fields
     /// inside an existing file → use the field's `Default`.
+    ///
+    /// Per the v0.2.0 plan (item 5), every load runs the
+    /// validator. Hard errors (wrong type, out-of-range, missing
+    /// required) refuse the load; warnings (deprecated fields,
+    /// unknown fields) are logged once and the load proceeds.
     pub async fn load(path: impl AsRef<Path>) -> anyhow::Result<Self> {
         let path = path.as_ref().to_path_buf();
-        let config = if path.exists() {
-            let text = tokio::fs::read_to_string(&path).await?;
-            toml::from_str::<RouterConfig>(&text)?
-        } else {
+        if !path.exists() {
             tracing::warn!(path = %path.display(), "config not found, using defaults");
-            RouterConfig::default()
-        };
+            return Ok(Self {
+                inner: Arc::new(RwLock::new(RouterConfig::default())),
+                path: Arc::new(path),
+            });
+        }
+        let text = tokio::fs::read_to_string(&path).await?;
+        let outcome = validate_toml(&text);
+        report_outcome(&outcome);
+        if outcome.has_errors() {
+            anyhow::bail!(
+                "config at {} failed validation: {} error(s); run `token-dealer check` for details",
+                path.display(),
+                outcome.errors.len()
+            );
+        }
+        let config: RouterConfig = toml::from_str(&text)?;
         Ok(Self {
             inner: Arc::new(RwLock::new(config)),
             path: Arc::new(path),
@@ -35,8 +52,19 @@ impl ConfigService {
         self.inner.read().await.clone()
     }
 
+    /// Hot-reload. Same validation rules as `load` — refuses to
+    /// swap in a config that fails the hard checks.
     pub async fn reload(&self) -> anyhow::Result<()> {
         let text = tokio::fs::read_to_string(&*self.path).await?;
+        let outcome = validate_toml(&text);
+        report_outcome(&outcome);
+        if outcome.has_errors() {
+            anyhow::bail!(
+                "config at {} failed validation: {} error(s); reload aborted",
+                self.path.display(),
+                outcome.errors.len()
+            );
+        }
         let new: RouterConfig = toml::from_str(&text)?;
         let mut g = self.inner.write().await;
         *g = new;
@@ -79,5 +107,14 @@ impl ConfigService {
         tokio::fs::write(&*self.path, serialized).await?;
         tracing::info!(path = %self.path.display(), "config saved to disk");
         Ok(())
+    }
+}
+
+/// Log validator warnings at WARN; errors are not logged here
+/// because the caller turns them into a startup/reload failure
+/// and a more useful message is needed.
+fn report_outcome(outcome: &ValidationOutcome) {
+    for w in &outcome.warnings {
+        tracing::warn!(path = %w.path, "{} — {}", w.path, w.reason);
     }
 }

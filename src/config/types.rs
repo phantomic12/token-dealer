@@ -263,9 +263,13 @@ impl SpecificityCategory {
             "image_generation" | "image-generation" | "image" => {
                 SpecificityCategory::ImageGeneration
             }
-            "video_generation" | "video-generation" | "video" => SpecificityCategory::VideoGeneration,
+            "video_generation" | "video-generation" | "video" => {
+                SpecificityCategory::VideoGeneration
+            }
             "social_media" | "social-media" | "social" => SpecificityCategory::SocialMedia,
-            "email_management" | "email-management" | "email" => SpecificityCategory::EmailManagement,
+            "email_management" | "email-management" | "email" => {
+                SpecificityCategory::EmailManagement
+            }
             "calendar_management" | "calendar-management" | "calendar" => {
                 SpecificityCategory::CalendarManagement
             }
@@ -325,7 +329,7 @@ pub struct SpecificityConfig {
 /// Per-tier + per-day + per-user cost / token budgets. Enforced
 /// at request-time by the chat handler before dispatch. Returns
 /// 429 + OpenAI-shape error envelope when exceeded.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BudgetConfig {
     /// Max USD per calendar day (UTC) across all requests. 0 = unlimited.
     #[serde(default)]
@@ -336,6 +340,16 @@ pub struct BudgetConfig {
     /// Soft warning at this fraction of the daily cap (default 0.8).
     #[serde(default = "default_warn_fraction")]
     pub warn_fraction: f64,
+}
+
+impl Default for BudgetConfig {
+    fn default() -> Self {
+        Self {
+            daily_cost_usd: 0.0,
+            per_request_cost_usd: 0.0,
+            warn_fraction: default_warn_fraction(),
+        }
+    }
 }
 
 fn default_warn_fraction() -> f64 {
