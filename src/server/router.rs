@@ -21,6 +21,7 @@ use super::ui::{
 };
 use super::ui_login as login_pages;
 use super::AppState;
+use crate::ratelimit;
 use axum::{
     middleware::from_fn_with_state,
     routing::{get, post},
@@ -140,6 +141,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/healthz", get(healthz))
         .route("/api/v1/events", get(sse_events))
         .with_state(state.clone())
+        .layer(from_fn_with_state(state.clone(), ratelimit::middleware))
         .layer(from_fn_with_state(state.clone(), auth::middleware))
         .layer(TraceLayer::new_for_http())
         .layer(request_id_layer())

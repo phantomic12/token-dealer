@@ -527,6 +527,77 @@ pub struct RouterConfig {
     /// SQLite log retention in days. 0 = forever (default).
     #[serde(default)]
     pub log_retention_days: u32,
+    /// Token-bucket rate limit. Per-key + global; applied to
+    /// the chat/messages/responses endpoints only.
+    #[serde(default)]
+    pub ratelimit: RateLimitConfig,
+}
+
+/// Per-plan v0.2.0 plan item 3. Token bucket, in-memory.
+/// Per-key refill + burst; global refill + burst. The escape
+/// hatch is `[ratelimit] enabled = false`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RateLimitConfig {
+    /// Master switch. `false` skips the middleware entirely;
+    /// used for friend-scale deployments where the user is the
+    /// only client.
+    #[serde(default = "default_ratelimit_enabled")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub global: RateLimitBucket,
+    #[serde(default)]
+    pub per_key: RateLimitBucket,
+}
+
+/// One bucket's parameters. `refill_per_minute` is the steady
+/// rate; `burst` is the maximum tokens held.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RateLimitBucket {
+    #[serde(default = "default_global_rpm")]
+    pub refill_per_minute: u32,
+    #[serde(default = "default_global_burst")]
+    pub burst: u32,
+}
+
+fn default_ratelimit_enabled() -> bool {
+    true
+}
+fn default_global_rpm() -> u32 {
+    600
+}
+fn default_global_burst() -> u32 {
+    1200
+}
+fn default_per_key_rpm() -> u32 {
+    60
+}
+fn default_per_key_burst() -> u32 {
+    120
+}
+
+impl Default for RateLimitConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_ratelimit_enabled(),
+            global: RateLimitBucket {
+                refill_per_minute: default_global_rpm(),
+                burst: default_global_burst(),
+            },
+            per_key: RateLimitBucket {
+                refill_per_minute: default_per_key_rpm(),
+                burst: default_per_key_burst(),
+            },
+        }
+    }
+}
+
+impl Default for RateLimitBucket {
+    fn default() -> Self {
+        Self {
+            refill_per_minute: 60,
+            burst: 120,
+        }
+    }
 }
 
 impl RouterConfig {

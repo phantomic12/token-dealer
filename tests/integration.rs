@@ -96,6 +96,7 @@ async fn make_state(mock_base: &str) -> AppState {
         user_store,
         pricing,
         telemetry,
+        token_dealer::ratelimit::RateLimiter::disabled(),
     )
 }
 
@@ -358,6 +359,7 @@ async fn non_standard_path_provider_routes_correctly() {
         user_store,
         pricing,
         telemetry,
+        token_dealer::ratelimit::RateLimiter::disabled(),
     );
     let app = build_router(state);
 
@@ -516,6 +518,7 @@ async fn fallback_chain_skips_500_provider_to_next() {
         user_store,
         pricing,
         telemetry,
+        token_dealer::ratelimit::RateLimiter::disabled(),
     );
     let app = build_router(state);
 
@@ -648,6 +651,7 @@ async fn auth_rejects_request_with_wrong_key() {
         user_store,
         pricing,
         telemetry,
+        token_dealer::ratelimit::RateLimiter::disabled(),
     );
 
     // No auth header
@@ -928,6 +932,7 @@ async fn image_endpoint_passes_through_to_provider() {
         user_store,
         pricing,
         telemetry,
+        token_dealer::ratelimit::RateLimiter::disabled(),
     );
     let app = build_router(state);
 
@@ -1038,6 +1043,7 @@ async fn make_state_with_specificity(
         user_store,
         pricing,
         token_dealer::telemetry::Telemetry::init(),
+        token_dealer::ratelimit::RateLimiter::disabled(),
     )
 }
 
@@ -1287,6 +1293,7 @@ async fn make_state_with_provider(
         user_store_outer,
         pricing_outer,
         telemetry,
+        token_dealer::ratelimit::RateLimiter::disabled(),
     )
 }
 

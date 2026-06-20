@@ -137,6 +137,24 @@ async fn main() -> anyhow::Result<()> {
         );
     }
     let telemetry = token_dealer::telemetry::Telemetry::init();
+    // v0.2.0 plan item 3: token-bucket rate limiter, in-memory.
+    // Per-key + global, applied to chat/messages/responses only.
+    // The middleware reads `[ratelimit]` from the active config
+    // snapshot on each request, so changes via the config
+    // reload path take effect without a restart.
+    let rate_limiter = {
+        let r = &snapshot.ratelimit;
+        if r.enabled {
+            token_dealer::ratelimit::RateLimiter::new(
+                r.per_key.refill_per_minute,
+                r.per_key.burst,
+                r.global.refill_per_minute,
+                r.global.burst,
+            )
+        } else {
+            token_dealer::ratelimit::RateLimiter::disabled()
+        }
+    };
     let pipeline = Pipeline::new(
         registry,
         config.clone(),
@@ -150,8 +168,18 @@ async fn main() -> anyhow::Result<()> {
         pricing.clone(),
     );
     let state = AppState::new(
-        pipeline, config, health, db, metadata, key_store, master, oauth, user_store, pricing,
+        pipeline,
+        config,
+        health,
+        db,
+        metadata,
+        key_store,
+        master,
+        oauth,
+        user_store,
+        pricing,
         telemetry,
+        rate_limiter,
     );
 
     let app = build_router(state);

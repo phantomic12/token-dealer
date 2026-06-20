@@ -13,6 +13,7 @@ pub mod metadata;
 pub mod oauth;
 pub mod providers;
 pub mod proxy;
+pub mod ratelimit;
 pub mod routing;
 pub mod schema;
 pub mod server;
@@ -38,6 +39,10 @@ pub struct AppState {
     pub user_store: auth::UserStore,
     pub pricing: cost::PricingStore,
     pub telemetry: telemetry::Telemetry,
+    /// Token-bucket rate limiter, shared across requests. Reads
+    /// `[ratelimit]` config on every request, so the active
+    /// configuration can change without a restart.
+    pub rate_limiter: ratelimit::RateLimiter,
     /// Server-Sent Events broadcast bus. Lazily initialized by the
     /// SSE handler; cheap to clone (broadcast::Sender).
     pub events: Arc<server::events::EventBus>,
@@ -57,6 +62,7 @@ impl AppState {
         user_store: auth::UserStore,
         pricing: cost::PricingStore,
         telemetry: telemetry::Telemetry,
+        rate_limiter: ratelimit::RateLimiter,
     ) -> Self {
         Self {
             pipeline: Arc::new(pipeline),
@@ -70,6 +76,7 @@ impl AppState {
             user_store,
             pricing,
             telemetry,
+            rate_limiter,
             events: Arc::new(server::events::EventBus::default()),
         }
     }
