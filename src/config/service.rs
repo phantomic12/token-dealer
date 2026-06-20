@@ -25,9 +25,20 @@ impl ConfigService {
     pub async fn load(path: impl AsRef<Path>) -> anyhow::Result<Self> {
         let path = path.as_ref().to_path_buf();
         if !path.exists() {
-            tracing::warn!(path = %path.display(), "config not found, using defaults");
+            // v0.2.0 plan item 5 first-run UX: write a minimal
+            // config to disk so subsequent runs find something
+            // to validate. The shape covers [server], [auth]
+            // (with enabled = true and an empty keys list), and
+            // an empty providers / tiers list. The admin
+            // password is generated separately by
+            // `bootstrap_admin_if_needed` and lives in the
+            // user_store, not the config file — keeps the
+            // password out of any backup / git-tracked artifact.
+            Self::write_minimal_config(&path).await?;
+            tracing::info!(path = %path.display(), "wrote minimal config (first run)");
+            let config = RouterConfig::default();
             return Ok(Self {
-                inner: Arc::new(RwLock::new(RouterConfig::default())),
+                inner: Arc::new(RwLock::new(config)),
                 path: Arc::new(path),
             });
         }
@@ -46,6 +57,40 @@ impl ConfigService {
             inner: Arc::new(RwLock::new(config)),
             path: Arc::new(path),
         })
+    }
+
+    /// Write a minimal `token-dealer.toml` to `path` for the
+    /// first-run case. Idempotent: caller is expected to only
+    /// invoke this when the file is missing. The shape is the
+    /// minimum needed for the server to start: a [server]
+    /// block with the default bind / log level, an [auth]
+    /// block with `enabled = true` (so the strict-master-key
+    /// gate is in effect), and an empty `[[auth.keys]]` array.
+    /// Providers and tiers are absent — the WebUI walks the
+    /// user through adding the first one.
+    async fn write_minimal_config(path: &Path) -> anyhow::Result<()> {
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                tokio::fs::create_dir_all(parent).await.ok();
+            }
+        }
+        let body = "\
+# token-dealer first-run config.
+# Add providers via /ui/providers or by editing this file.
+# See README.md for the full schema and an upgraded example.
+[server]
+bind = \"0.0.0.0:8080\"
+log_level = \"info\"
+
+[auth]
+enabled = true
+
+[[auth.keys]]
+# name = \"example\"
+# key = \"sk-...\"
+";
+        tokio::fs::write(path, body).await?;
+        Ok(())
     }
 
     pub async fn snapshot(&self) -> RouterConfig {

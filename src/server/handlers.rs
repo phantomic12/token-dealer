@@ -100,6 +100,25 @@ pub async fn chat_completions(
     axum::extract::Extension(user): axum::extract::Extension<crate::auth::UserContext>,
     Json(body): Json<Value>,
 ) -> Response {
+    // v0.2.0 plan item 5: if no providers are configured, the
+    // server still starts (so /health and /ui/ work) but the
+    // chat endpoint surfaces a 503 with a clear pointer to the
+    // setup flow. Without this, the user gets a generic 500
+    // from the routing layer and has to grep logs to figure
+    // out why nothing dispatches.
+    if state.pipeline.registry.ids().await.is_empty() {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({
+                "error": {
+                    "message": "no providers configured; visit /ui/providers to add one",
+                    "type": "no_providers",
+                    "code": "no_providers_configured",
+                }
+            })),
+        )
+            .into_response();
+    }
     let pre = match parse_inbound(body) {
         Ok(p) => p,
         Err(e) => return e.into_response(),
