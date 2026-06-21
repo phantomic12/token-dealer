@@ -33,9 +33,12 @@ impl Default for ServerConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthConfig {
     pub enabled: bool,
-    /// Legacy single admin key. New code uses the `users` table
-    /// + API keys. This is here so existing `token-dealer.toml`
-    /// configs without a user table still work.
+    /// Legacy single admin key.
+    ///
+    /// New code uses the `users` table + API keys. This is here so
+    /// existing `token-dealer.toml` configs without a user table
+    /// still work.
+    ///
     #[serde(default)]
     pub admin_key: Option<String>,
     #[serde(default)]
@@ -44,8 +47,15 @@ pub struct AuthConfig {
 
 impl Default for AuthConfig {
     fn default() -> Self {
+        // v0.2.0 plan item 1: `[auth] enabled = true` is now
+        // the default. Combined with the strict master-key gate
+        // (item 2), this means a fresh `token-dealer.toml` will
+        // refuse to start until the operator sets
+        // `ROUTER_MASTER_KEY` and either runs through the
+        // first-run admin bootstrap (printed password) or
+        // explicitly opts out with `enabled = false`.
         Self {
-            enabled: false,
+            enabled: true,
             admin_key: None,
             keys: Vec::new(),
         }
@@ -229,7 +239,9 @@ pub struct RetryConfig {
 /// specificity system.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum SpecificityCategory {
+    #[default]
     Coding,
     WebBrowsing,
     DataAnalysis,
@@ -263,9 +275,13 @@ impl SpecificityCategory {
             "image_generation" | "image-generation" | "image" => {
                 SpecificityCategory::ImageGeneration
             }
-            "video_generation" | "video-generation" | "video" => SpecificityCategory::VideoGeneration,
+            "video_generation" | "video-generation" | "video" => {
+                SpecificityCategory::VideoGeneration
+            }
             "social_media" | "social-media" | "social" => SpecificityCategory::SocialMedia,
-            "email_management" | "email-management" | "email" => SpecificityCategory::EmailManagement,
+            "email_management" | "email-management" | "email" => {
+                SpecificityCategory::EmailManagement
+            }
             "calendar_management" | "calendar-management" | "calendar" => {
                 SpecificityCategory::CalendarManagement
             }
@@ -294,12 +310,6 @@ impl std::fmt::Display for SpecificityCategory {
     }
 }
 
-impl Default for SpecificityCategory {
-    fn default() -> Self {
-        SpecificityCategory::Coding
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SpecificityRule {
     pub category: SpecificityCategory,
@@ -325,7 +335,7 @@ pub struct SpecificityConfig {
 /// Per-tier + per-day + per-user cost / token budgets. Enforced
 /// at request-time by the chat handler before dispatch. Returns
 /// 429 + OpenAI-shape error envelope when exceeded.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BudgetConfig {
     /// Max USD per calendar day (UTC) across all requests. 0 = unlimited.
     #[serde(default)]
@@ -336,6 +346,16 @@ pub struct BudgetConfig {
     /// Soft warning at this fraction of the daily cap (default 0.8).
     #[serde(default = "default_warn_fraction")]
     pub warn_fraction: f64,
+}
+
+impl Default for BudgetConfig {
+    fn default() -> Self {
+        Self {
+            daily_cost_usd: 0.0,
+            per_request_cost_usd: 0.0,
+            warn_fraction: default_warn_fraction(),
+        }
+    }
 }
 
 fn default_warn_fraction() -> f64 {
@@ -513,6 +533,77 @@ pub struct RouterConfig {
     /// SQLite log retention in days. 0 = forever (default).
     #[serde(default)]
     pub log_retention_days: u32,
+    /// Token-bucket rate limit. Per-key + global; applied to
+    /// the chat/messages/responses endpoints only.
+    #[serde(default)]
+    pub ratelimit: RateLimitConfig,
+}
+
+/// Per-plan v0.2.0 plan item 3. Token bucket, in-memory.
+/// Per-key refill + burst; global refill + burst. The escape
+/// hatch is `[ratelimit] enabled = false`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RateLimitConfig {
+    /// Master switch. `false` skips the middleware entirely;
+    /// used for friend-scale deployments where the user is the
+    /// only client.
+    #[serde(default = "default_ratelimit_enabled")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub global: RateLimitBucket,
+    #[serde(default)]
+    pub per_key: RateLimitBucket,
+}
+
+/// One bucket's parameters. `refill_per_minute` is the steady
+/// rate; `burst` is the maximum tokens held.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RateLimitBucket {
+    #[serde(default = "default_global_rpm")]
+    pub refill_per_minute: u32,
+    #[serde(default = "default_global_burst")]
+    pub burst: u32,
+}
+
+fn default_ratelimit_enabled() -> bool {
+    true
+}
+fn default_global_rpm() -> u32 {
+    600
+}
+fn default_global_burst() -> u32 {
+    1200
+}
+fn default_per_key_rpm() -> u32 {
+    60
+}
+fn default_per_key_burst() -> u32 {
+    120
+}
+
+impl Default for RateLimitConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_ratelimit_enabled(),
+            global: RateLimitBucket {
+                refill_per_minute: default_global_rpm(),
+                burst: default_global_burst(),
+            },
+            per_key: RateLimitBucket {
+                refill_per_minute: default_per_key_rpm(),
+                burst: default_per_key_burst(),
+            },
+        }
+    }
+}
+
+impl Default for RateLimitBucket {
+    fn default() -> Self {
+        Self {
+            refill_per_minute: 60,
+            burst: 120,
+        }
+    }
 }
 
 impl RouterConfig {

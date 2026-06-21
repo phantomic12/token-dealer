@@ -18,6 +18,7 @@ pub fn log_request(db: &Db, log: RequestLog) {
     });
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn update_request_final(
     db: &Db,
     id: String,

@@ -22,7 +22,12 @@ impl OpenAiAdapter {
         base_url: impl Into<String>,
         default_model: impl Into<String>,
     ) -> Self {
-        Self::with_path(id, base_url, "/v1/chat/completions".to_string(), default_model)
+        Self::with_path(
+            id,
+            base_url,
+            "/v1/chat/completions".to_string(),
+            default_model,
+        )
     }
 
     pub fn with_path(
@@ -99,19 +104,17 @@ impl ProviderAdapter for OpenAiAdapter {
             body["stop"] = json!(stop);
         }
         if let Some(tools) = &req.tools {
-            body["tools"] = json!(
-                tools
-                    .iter()
-                    .map(|t| json!({
-                        "type": "function",
-                        "function": {
-                            "name": t.name,
-                            "description": t.description,
-                            "parameters": t.parameters,
-                        }
-                    }))
-                    .collect::<Vec<_>>()
-            );
+            body["tools"] = json!(tools
+                .iter()
+                .map(|t| json!({
+                    "type": "function",
+                    "function": {
+                        "name": t.name,
+                        "description": t.description,
+                        "parameters": t.parameters,
+                    }
+                }))
+                .collect::<Vec<_>>());
         }
         if let Some(tc) = &req.tool_choice {
             body["tool_choice"] = match tc {
@@ -178,10 +181,7 @@ impl ProviderAdapter for OpenAiAdapter {
             }
             // OpenAI streams need stream_options.include_usage to get token counts.
             if let Value::Object(ref mut m) = body {
-                m.insert(
-                    "stream_options".to_string(),
-                    json!({"include_usage": true}),
-                );
+                m.insert("stream_options".to_string(), json!({"include_usage": true}));
             }
 
             let resp = client
@@ -262,7 +262,7 @@ fn message_to_openai(msg: &CanonicalMessage) -> Value {
                     let url = match data {
                         ImageData::Url { url } => url.clone(),
                         ImageData::Base64 { data } => {
-                            format!("data:{};base64,{}", media_type, data)
+                            format!("data:{media_type};base64,{data}")
                         }
                     };
                     Some(json!({"type": "image_url", "image_url": {"url": url}}))
@@ -311,18 +311,36 @@ fn message_to_openai(msg: &CanonicalMessage) -> Value {
 }
 
 fn parse_openai_response(v: &Value, provider_id: &str) -> AppResult<CanonicalResponse> {
-    let id = v.get("id").and_then(|x| x.as_str()).unwrap_or_default().to_string();
-    let model = v.get("model").and_then(|x| x.as_str()).unwrap_or_default().to_string();
+    let id = v
+        .get("id")
+        .and_then(|x| x.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let model = v
+        .get("model")
+        .and_then(|x| x.as_str())
+        .unwrap_or_default()
+        .to_string();
 
     let mut content = Vec::new();
-    if let Some(choice) = v.get("choices").and_then(|c| c.as_array()).and_then(|a| a.first()) {
+    if let Some(choice) = v
+        .get("choices")
+        .and_then(|c| c.as_array())
+        .and_then(|a| a.first())
+    {
         if let Some(msg) = choice.get("message") {
             if let Some(s) = msg.get("content").and_then(|x| x.as_str()) {
-                content.push(ContentBlock::Text { text: s.to_string() });
+                content.push(ContentBlock::Text {
+                    text: s.to_string(),
+                });
             }
             if let Some(tcs) = msg.get("tool_calls").and_then(|x| x.as_array()) {
                 for tc in tcs {
-                    let id = tc.get("id").and_then(|x| x.as_str()).unwrap_or_default().to_string();
+                    let id = tc
+                        .get("id")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or_default()
+                        .to_string();
                     let name = tc
                         .get("function")
                         .and_then(|f| f.get("name"))
@@ -335,7 +353,11 @@ fn parse_openai_response(v: &Value, provider_id: &str) -> AppResult<CanonicalRes
                         .and_then(|x| x.as_str())
                         .unwrap_or("{}");
                     let arguments = serde_json::from_str(args_str).unwrap_or(Value::Null);
-                    content.push(ContentBlock::ToolUse { id, name, input: arguments });
+                    content.push(ContentBlock::ToolUse {
+                        id,
+                        name,
+                        input: arguments,
+                    });
                 }
             }
         }
@@ -365,7 +387,10 @@ fn parse_openai_usage(u: &Value) -> Usage {
     let prompt_details = u.get("prompt_tokens_details");
     Usage {
         input_tokens: u.get("prompt_tokens").and_then(|x| x.as_u64()).unwrap_or(0) as u32,
-        output_tokens: u.get("completion_tokens").and_then(|x| x.as_u64()).unwrap_or(0) as u32,
+        output_tokens: u
+            .get("completion_tokens")
+            .and_then(|x| x.as_u64())
+            .unwrap_or(0) as u32,
         cache_read_tokens: prompt_details
             .and_then(|d| d.get("cached_tokens"))
             .and_then(|x| x.as_u64())
@@ -374,8 +399,12 @@ fn parse_openai_usage(u: &Value) -> Usage {
     }
 }
 
-fn parse_openai_chunk(v: &Value, model_id: &str, provider_id: &str) -> Option<CanonicalChunk> {
-    let id = v.get("id").and_then(|x| x.as_str()).unwrap_or_default().to_string();
+fn parse_openai_chunk(v: &Value, model_id: &str, _provider_id: &str) -> Option<CanonicalChunk> {
+    let id = v
+        .get("id")
+        .and_then(|x| x.as_str())
+        .unwrap_or_default()
+        .to_string();
     let choice = v.get("choices")?.as_array()?.first()?;
     let delta = choice.get("delta")?;
     let text = delta
@@ -387,7 +416,11 @@ fn parse_openai_chunk(v: &Value, model_id: &str, provider_id: &str) -> Option<Ca
         .and_then(|x| x.as_array())
         .and_then(|arr| arr.first())
         .map(|tc| CanonicalToolCall {
-            id: tc.get("id").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            id: tc
+                .get("id")
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .to_string(),
             name: tc
                 .get("function")
                 .and_then(|f| f.get("name"))

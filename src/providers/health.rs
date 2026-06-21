@@ -51,15 +51,11 @@ impl HealthRegistry {
 
     pub async fn record_success(&self, provider_id: &str) {
         let mut g = self.inner.write().await;
-        g.entry(provider_id.to_string())
-            .or_default()
-            .status = ProviderHealthState::Healthy;
+        g.entry(provider_id.to_string()).or_default().status = ProviderHealthState::Healthy;
         g.entry(provider_id.to_string())
             .or_default()
             .consecutive_failures = 0;
-        g.entry(provider_id.to_string())
-            .or_default()
-            .cooldown_until = None;
+        g.entry(provider_id.to_string()).or_default().cooldown_until = None;
     }
 
     pub async fn record_failure(&self, provider_id: &str, threshold: u32, cooldown_secs: u64) {
@@ -76,12 +72,10 @@ impl HealthRegistry {
 
     pub async fn is_available(&self, provider_id: &str) -> bool {
         let g = self.inner.read().await;
-        match g.get(provider_id) {
-            None => true,
-            Some(h) => match h.cooldown_until {
-                Some(until) if until > std::time::Instant::now() => false,
-                _ => true,
-            },
-        }
+        let h = match g.get(provider_id) {
+            None => return true,
+            Some(h) => h,
+        };
+        !matches!(h.cooldown_until, Some(until) if until > std::time::Instant::now())
     }
 }

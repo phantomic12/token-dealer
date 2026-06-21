@@ -5,6 +5,7 @@ pub mod events;
 pub mod handlers;
 pub mod middleware;
 pub mod multimodal;
+pub mod passthrough;
 pub mod router;
 pub mod ui;
 pub mod ui_login;

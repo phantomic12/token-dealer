@@ -190,6 +190,7 @@ fn lookup_provider(provider: &str) -> Option<ProviderOAuth> {
 }
 
 #[derive(Serialize)]
+#[allow(dead_code)] // Reserved for the (planned) `setup` subcommand.
 struct SetupReq {
     provider_id: String,
     refresh_token: String,
@@ -200,6 +201,7 @@ struct SetupReq {
 }
 
 #[derive(Deserialize)]
+#[allow(dead_code)] // Reserved for the (planned) `setup` subcommand.
 struct SetupResp {
     status: String,
     #[serde(default)]
@@ -249,9 +251,7 @@ async fn main() -> anyhow::Result<()> {
     let provider = provider_idx
         .and_then(|i| args.get(i).cloned())
         .ok_or_else(|| {
-            anyhow::anyhow!(
-                "missing provider name. Run `token-dealer-login --help` for usage."
-            )
+            anyhow::anyhow!("missing provider name. Run `token-dealer-login --help` for usage.")
         })?;
 
     // Anthropic uses the paste-code flow. Print the URL + instructions.
@@ -310,7 +310,7 @@ fn run_anthropic_paste(server: &str, print_only: bool) -> anyhow::Result<()> {
     // PKCE: code_verifier doubles as state (Anthropic convention).
     let verifier = random_token(64);
     let challenge = pkce_s256(&verifier);
-    let mut url = format!(
+    let url = format!(
         "{}?code=true&client_id={}&response_type=code&redirect_uri={}&scope={}&state={}&code_challenge={}&code_challenge_method=S256",
         cfg.authorize_url,
         urlenc(cfg.client_id),
@@ -367,9 +367,7 @@ fn run_anthropic_paste(server: &str, print_only: bool) -> anyhow::Result<()> {
         .get("refresh_token")
         .and_then(|x| x.as_str())
         .ok_or_else(|| {
-            anyhow::anyhow!(
-                "Anthropic response missing refresh_token. Re-run the paste flow."
-            )
+            anyhow::anyhow!("Anthropic response missing refresh_token. Re-run the paste flow.")
         })?
         .to_string();
     push_refresh_token(server, "anthropic", &refresh, None, None)?;
@@ -389,7 +387,11 @@ fn run_device_flow(server: &str, provider: &str, print_only: bool) -> anyhow::Re
         provider
     ))?;
     if !(200..300).contains(&start.status()) {
-        anyhow::bail!("device flow start failed: {} {}", start.status(), start.into_string()?);
+        anyhow::bail!(
+            "device flow start failed: {} {}",
+            start.status(),
+            start.into_string()?
+        );
     }
     let body: Value = start.into_json()?;
     let device_code = body
@@ -423,7 +425,10 @@ fn run_device_flow(server: &str, provider: &str, print_only: bool) -> anyhow::Re
         loop {
             tokio::time::sleep(Duration::from_secs(3)).await;
             let poll = client
-                .post(format!("{}/admin/oauth/device/poll", server.trim_end_matches('/')))
+                .post(format!(
+                    "{}/admin/oauth/device/poll",
+                    server.trim_end_matches('/')
+                ))
                 .json(&json!({ "device_code": device_code }))
                 .send()
                 .await?;
@@ -452,7 +457,7 @@ async fn run_popup_flow(
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let local_addr = listener.local_addr()?;
     let callback_url = format!("http://127.0.0.1:{}/callback", local_addr.port());
-    println!("Loopback callback bound to {}", callback_url);
+    println!("Loopback callback bound to {callback_url}");
 
     // PKCE
     let verifier = random_token(64);
@@ -509,7 +514,7 @@ async fn run_popup_flow(
         }
     });
 
-    println!("Waiting for browser callback on {}...", callback_url);
+    println!("Waiting for browser callback on {callback_url}...");
     let result = rx.await?;
     match result {
         CallbackResult::Ok { code, state: _ } => {
@@ -554,13 +559,7 @@ async fn run_popup_flow(
                 .to_string();
             // Some providers return an `access_token` here; the
             // server can also accept a refresh_token directly.
-            push_refresh_token(
-                server,
-                provider,
-                &refresh,
-                None,
-                None,
-            )?;
+            push_refresh_token(server, provider, &refresh, None, None)?;
             println!("✓ {provider} refresh_token stored on {server}.");
         }
         CallbackResult::Error(e) => {
@@ -571,7 +570,14 @@ async fn run_popup_flow(
 }
 
 enum CallbackResult {
-    Ok { code: String, state: String },
+    #[allow(dead_code)] // `state` is kept for the future "validate
+    // callback state matches expected_state" use
+    // case; not currently consumed because the
+    // listener only opens one connection.
+    Ok {
+        code: String,
+        state: String,
+    },
     Error(String),
 }
 
@@ -589,7 +595,7 @@ async fn accept_callback(
         .split_once(' ')
         .ok_or_else(|| anyhow::anyhow!("bad request line"))?;
     let (_method, path) = path_query.split_once(' ').unwrap_or(("GET", path_query));
-    let url = format!("http://127.0.0.1{}", path);
+    let url = format!("http://127.0.0.1{path}");
     let parsed = url::Url::parse(&url)?;
     let mut code = String::new();
     let mut state = String::new();
@@ -615,17 +621,12 @@ async fn accept_callback(
             "<html><body style='font-family:sans-serif'><h1>OAuth error</h1>\
              <p>Provider returned <code>{error}</code>. You can close this window.</p></body></html>"
         );
-        let _ = write_response(
-            &mut writer,
-            400,
-            "text/html",
-            &body,
-        )
-        .await;
+        let _ = write_response(&mut writer, 400, "text/html", &body).await;
         return Ok(CallbackResult::Error(format!("provider error: {error}")));
     }
     if state != expected_state {
-        let body = "<html><body><h1>State mismatch</h1><p>You can close this window.</p></body></html>";
+        let body =
+            "<html><body><h1>State mismatch</h1><p>You can close this window.</p></body></html>";
         let _ = write_response(&mut writer, 400, "text/html", body).await;
         return Ok(CallbackResult::Error(
             "state mismatch (different browser session?)".into(),
@@ -671,7 +672,11 @@ fn push_refresh_token(
     registered_client_id: Option<&str>,
     registered_client_secret: Option<&str>,
 ) -> anyhow::Result<()> {
-    let url = format!("{}/admin/oauth/{}/setup", server.trim_end_matches('/'), provider);
+    let url = format!(
+        "{}/admin/oauth/{}/setup",
+        server.trim_end_matches('/'),
+        provider
+    );
     let mut body = json!({
         "refresh_token": refresh,
     });
@@ -722,7 +727,7 @@ fn urlenc(s: &str) -> String {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
                 out.push(b as char)
             }
-            _ => out.push_str(&format!("%{:02X}", b)),
+            _ => out.push_str(&format!("%{b:02X}")),
         }
     }
     out
@@ -736,8 +741,7 @@ fn random_token(len: usize) -> String {
     // on the raw RNG output avoids the lossiness of from_utf8_lossy
     // which would emit U+FFFD replacement chars that double-encode
     // to %EF%BF%BD inside urlenc().
-    const ALPHABET: &[u8] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
     let mut buf = vec![0u8; len];
     rand::Rng::fill(&mut rand::thread_rng(), &mut buf[..]);
     buf.iter()
@@ -776,14 +780,14 @@ impl ColorExt for str {
         if std::env::var("NO_COLOR").is_ok() {
             self.to_string()
         } else {
-            format!("\x1b[1;36m{}\x1b[0m", self)
+            format!("\x1b[1;36m{self}\x1b[0m")
         }
     }
     fn bright_yellow(&self) -> String {
         if std::env::var("NO_COLOR").is_ok() {
             self.to_string()
         } else {
-            format!("\x1b[1;33m{}\x1b[0m", self)
+            format!("\x1b[1;33m{self}\x1b[0m")
         }
     }
 }

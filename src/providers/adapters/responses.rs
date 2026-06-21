@@ -1,14 +1,16 @@
 //! OpenAI Responses API adapter (/v1/responses).
 //! Used for Codex, o1-pro, and deep-research models that reject
 //! /v1/chat/completions. Different shape:
-//!   - request: `{input: [...], model, instructions, ...}` (no `messages`)
-//!   - streaming: emits `response.*` events instead of `chat.completion.chunk`
+//!
+//! - request: `{input: [...], model, instructions, ...}` (no `messages`)
+//! - streaming: emits `response.*` events instead of `chat.completion.chunk`
+//!
 //! We translate to/from the OpenAI chat-completions shape at the boundary
 //! so the rest of the router doesn't need to know.
 
-use crate::providers::adapter::{Capability, ProviderAdapter, ProviderStream};
 use crate::error::AppError;
 use crate::error::AppResult;
+use crate::providers::adapter::{Capability, ProviderAdapter, ProviderStream};
 use crate::schema::canonical::*;
 use async_stream::try_stream;
 use futures::StreamExt;
@@ -107,17 +109,15 @@ impl ProviderAdapter for ResponsesAdapter {
             body["top_p"] = json!(p);
         }
         if let Some(tools) = &req.tools {
-            body["tools"] = json!(
-                tools
-                    .iter()
-                    .map(|t| json!({
-                        "type": "function",
-                        "name": t.name,
-                        "description": t.description,
-                        "parameters": t.parameters,
-                    }))
-                    .collect::<Vec<_>>()
-            );
+            body["tools"] = json!(tools
+                .iter()
+                .map(|t| json!({
+                    "type": "function",
+                    "name": t.name,
+                    "description": t.description,
+                    "parameters": t.parameters,
+                }))
+                .collect::<Vec<_>>());
         }
         body
     }
@@ -294,7 +294,9 @@ fn parse_responses_response(
                 if let Some(parts) = item.get("content").and_then(|c| c.as_array()) {
                     for p in parts {
                         if let Some(t) = p.get("text").and_then(|x| x.as_str()) {
-                            content.push(ContentBlock::Text { text: t.to_string() });
+                            content.push(ContentBlock::Text {
+                                text: t.to_string(),
+                            });
                         }
                     }
                 }

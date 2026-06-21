@@ -17,7 +17,6 @@
 //! `td.output_tokens`, `td.cost_usd`, `td.request_id`.
 
 use opentelemetry::global;
-use opentelemetry::trace::TracerProvider as _;
 use opentelemetry::KeyValue;
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::trace::TracerProvider;
@@ -47,10 +46,7 @@ impl Telemetry {
                 .with_endpoint(ep)
                 .build()
                 .ok()?;
-            let resource = Resource::new(vec![KeyValue::new(
-                SERVICE_NAME,
-                "token-dealer",
-            )]);
+            let resource = Resource::new(vec![KeyValue::new(SERVICE_NAME, "token-dealer")]);
             let p = TracerProvider::builder()
                 .with_batch_exporter(exporter, opentelemetry_sdk::runtime::Tokio)
                 .with_resource(resource)

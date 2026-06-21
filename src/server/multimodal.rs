@@ -37,7 +37,9 @@ pub async fn passthrough(
     }
 
     // Resolve provider. Accept provider/model or tier/provider/model.
-    let (provider_id, _model_id) = match super::super::providers::ProviderRegistry::split_model_ref(&model) {
+    let (provider_id, _model_id) = match super::super::providers::ProviderRegistry::split_model_ref(
+        &model,
+    ) {
         Some(pm) => pm,
         None => {
             // Try tier/provider/model
@@ -71,7 +73,7 @@ pub async fn passthrough(
         .iter()
         .find(|p| p.id == provider_id)
         .and_then(|p| p.key.as_deref());
-    let key = resolve_key_async(&state.key_store, &provider_id, cfg_key).await;
+    let key = resolve_key_async(&state.key_store, &state.master, &provider_id, cfg_key).await;
     if key.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
@@ -105,8 +107,7 @@ pub async fn passthrough(
         Err(e) => return error_response(StatusCode::BAD_GATEWAY, format!("upstream send: {e}")),
     };
 
-    let status = StatusCode::from_u16(resp.status().as_u16())
-        .unwrap_or(StatusCode::BAD_GATEWAY);
+    let status = StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
     let ct = resp
         .headers()
         .get("content-type")
@@ -140,7 +141,9 @@ pub async fn passthrough(
                         truncated: false,
                         fallback_count: 0,
                         finished: true,
-                        finish_reason: Some(if status.is_success() { "ok" } else { "error" }.to_string()),
+                        finish_reason: Some(
+                            if status.is_success() { "ok" } else { "error" }.to_string(),
+                        ),
                         client_ip: None,
                         user_id: None,
                         user_agent: None,
@@ -173,23 +176,14 @@ fn error_response(status: StatusCode, message: String) -> Response {
         .into_response()
 }
 
-pub async fn image_generations(
-    state: State<AppState>,
-    body: Json<Value>,
-) -> Response {
+pub async fn image_generations(state: State<AppState>, body: Json<Value>) -> Response {
     passthrough(state, "/v1/images/generations", body).await
 }
 
-pub async fn audio_speech(
-    state: State<AppState>,
-    body: Json<Value>,
-) -> Response {
+pub async fn audio_speech(state: State<AppState>, body: Json<Value>) -> Response {
     passthrough(state, "/v1/audio/speech", body).await
 }
 
-pub async fn video_generations(
-    state: State<AppState>,
-    body: Json<Value>,
-) -> Response {
+pub async fn video_generations(state: State<AppState>, body: Json<Value>) -> Response {
     passthrough(state, "/v1/videos/generations", body).await
 }

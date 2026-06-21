@@ -23,8 +23,8 @@ use std::time::{Duration, Instant};
 #[derive(Debug, Clone)]
 pub struct RoutingPlan {
     pub request: CanonicalRequest,
-    pub primary: String,         // "provider/model"
-    pub fallbacks: Vec<String>,  // "provider/model" list
+    pub primary: String,        // "provider/model"
+    pub fallbacks: Vec<String>, // "provider/model" list
     pub downgrade_to: Option<String>,
     pub request_budget: Duration,
     pub max_retries_per_provider: u32,
@@ -36,13 +36,22 @@ pub struct RoutingPlan {
 pub enum AttemptOutcome {
     Success,
     /// Transient — retry same provider once.
-    Retry { wait_ms: u64, reason: &'static str },
+    Retry {
+        wait_ms: u64,
+        reason: &'static str,
+    },
     /// Provider failed — try next fallback.
-    Skip { reason: &'static str },
+    Skip {
+        reason: &'static str,
+    },
     /// 401/403 — provider is poisoned, remove from chain.
-    Fatal { reason: &'static str },
+    Fatal {
+        reason: &'static str,
+    },
     /// 400 with context-too-long — find a model with a bigger window.
-    ContextTooLong { limit: u32 },
+    ContextTooLong {
+        limit: u32,
+    },
 }
 
 impl AttemptOutcome {
@@ -62,15 +71,13 @@ impl AttemptOutcome {
 
 pub fn classify(err: &AppError) -> AttemptOutcome {
     match err {
-        AppError::ProviderError { status, message, .. } => {
-            classify_status(*status, message)
-        }
+        AppError::ProviderError {
+            status, message, ..
+        } => classify_status(*status, message),
         AppError::UpstreamTimeout { .. } => AttemptOutcome::Skip {
             reason: "upstream timeout",
         },
-        AppError::ContextTooLong { limit, .. } => AttemptOutcome::ContextTooLong {
-            limit: *limit,
-        },
+        AppError::ContextTooLong { limit, .. } => AttemptOutcome::ContextTooLong { limit: *limit },
         AppError::Internal(_) => AttemptOutcome::Skip {
             reason: "internal error",
         },
@@ -192,7 +199,9 @@ where
             attempts.push(AttemptRecord {
                 provider: provider_id.clone(),
                 model: model_id.clone(),
-                outcome: AttemptOutcome::Skip { reason: "no adapter" },
+                outcome: AttemptOutcome::Skip {
+                    reason: "no adapter",
+                },
                 latency_ms: 0,
             });
             providers_tried.push(provider_id);
@@ -222,10 +231,7 @@ where
         // Record outcome on health
         if outcome.is_retry() || matches!(outcome, AttemptOutcome::Success) {
             // success; reset failure count
-            health
-                .registry
-                .record_success(&handle.provider_id)
-                .await;
+            health.registry.record_success(&handle.provider_id).await;
         } else {
             health
                 .registry
@@ -240,7 +246,7 @@ where
         attempts.push(AttemptRecord {
             provider: handle.provider_id.clone(),
             model: handle.model_id.clone(),
-            outcome: outcome.clone(),
+            outcome,
             latency_ms: first_latency,
         });
 
@@ -274,10 +280,7 @@ where
                 Err(e) => classify(e),
             };
             if retry_outcome.is_retry() || matches!(retry_outcome, AttemptOutcome::Success) {
-                health
-                    .registry
-                    .record_success(&handle.provider_id)
-                    .await;
+                health.registry.record_success(&handle.provider_id).await;
             } else {
                 health
                     .registry
@@ -291,7 +294,7 @@ where
             attempts.push(AttemptRecord {
                 provider: handle.provider_id.clone(),
                 model: handle.model_id.clone(),
-                outcome: retry_outcome.clone(),
+                outcome: retry_outcome,
                 latency_ms: retry_latency,
             });
             if let Ok(resp) = retry {

@@ -1,17 +1,16 @@
 //! HTTP handlers. Thin — most logic lives in `proxy/pipeline.rs`.
 
 use super::AppState;
+use async_stream::stream;
 use axum::{
     extract::State,
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     Json,
 };
-use async_stream::stream;
 use futures::StreamExt;
 use serde_json::{json, Value};
 
-use crate::proxy::pipeline::Pipeline;
 use crate::routing::scorer::{Scorer, ScoringContext};
 use crate::routing::specificity::detector_from_config;
 use crate::schema::inbound::parse_inbound;
@@ -26,7 +25,11 @@ pub async fn health() -> impl IntoResponse {
 /// total tokens, total USD cost, top providers. Updated continuously
 /// from the token_usage + request_log tables.
 pub async fn public_stats(State(state): State<AppState>) -> Response {
-    let (input, output, cost, reqs) = state.user_store.get_global_usage_today().await.unwrap_or((0, 0, 0.0, 0));
+    let (input, output, cost, reqs) = state
+        .user_store
+        .get_global_usage_today()
+        .await
+        .unwrap_or((0, 0, 0.0, 0));
     let snap = state.config.snapshot().await;
     let provider_count = snap.providers.len();
     Json(json!({
@@ -96,6 +99,25 @@ pub async fn chat_completions(
     axum::extract::Extension(user): axum::extract::Extension<crate::auth::UserContext>,
     Json(body): Json<Value>,
 ) -> Response {
+    // v0.2.0 plan item 5: if no providers are configured, the
+    // server still starts (so /health and /ui/ work) but the
+    // chat endpoint surfaces a 503 with a clear pointer to the
+    // setup flow. Without this, the user gets a generic 500
+    // from the routing layer and has to grep logs to figure
+    // out why nothing dispatches.
+    if state.pipeline.registry.ids().await.is_empty() {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({
+                "error": {
+                    "message": "no providers configured; visit /ui/providers to add one",
+                    "type": "no_providers",
+                    "code": "no_providers_configured",
+                }
+            })),
+        )
+            .into_response();
+    }
     let pre = match parse_inbound(body) {
         Ok(p) => p,
         Err(e) => return e.into_response(),
@@ -243,18 +265,13 @@ pub async fn chat_completions(
     let provider_id = routed.route.provider_id.clone();
     let model_id = routed.route.model_id.clone();
     let request_id = routed.request_id;
-    let specificity_for_header = routed
-        .canonical
-        .metadata
-        .specificity_category
-        .clone();
+    let specificity_for_header = routed.canonical.metadata.specificity_category.clone();
 
     // Per-request key override: `X-Router-Key: <key>` bypasses the
     // resolved key. Used to swap in a different upstream key without
     // touching the config (e.g. tenant-specific billing, ad-hoc
     // testing). The inbound Authorization header is still validated
     // by the auth middleware — this only swaps the UPSTREAM key.
-    let mut routed = routed;
     if let Some(override_key) = headers.get("x-router-key").and_then(|v| v.to_str().ok()) {
         if !override_key.is_empty() {
             tracing::info!(
@@ -363,7 +380,7 @@ pub async fn chat_completions(
             Err(e) => return e.into_response(),
         };
         let v = response_to_openai(&resp);
-        let mut resp = (StatusCode::OK, Json(v)).into_response();
+        let resp = (StatusCode::OK, Json(v)).into_response();
         attach_routing_headers(
             resp,
             &provider_id,

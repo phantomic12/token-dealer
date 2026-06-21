@@ -4,7 +4,7 @@ use anyhow::Context;
 use std::sync::Arc;
 use token_dealer::{
     auth::{KeyStore, MasterKey},
-    config::ConfigService,
+    config::{validate_config, ConfigService},
     db::Db,
     metadata::MetadataStore,
     providers::{HealthRegistry, ProviderRegistry},
@@ -21,9 +21,17 @@ async fn main() -> anyhow::Result<()> {
         return run_healthcheck();
     }
 
+    // `token-dealer check [--config PATH]`: validate the config
+    // without starting the server. Used by CI, pre-deploy hooks,
+    // and the v0.2.0 upgrade flow. Exits 0 on clean, 1 on
+    // hard errors, 2 on warnings only.
+    if let Some(idx) = std::env::args().position(|a| a == "check") {
+        return run_check(idx);
+    }
+
     init_tracing();
-    let config_path = std::env::var("TOKEN_DEALER_CONFIG")
-        .unwrap_or_else(|_| "token-dealer.toml".to_string());
+    let config_path =
+        std::env::var("TOKEN_DEALER_CONFIG").unwrap_or_else(|_| "token-dealer.toml".to_string());
 
     let config = ConfigService::load(&config_path)
         .await
@@ -42,10 +50,12 @@ async fn main() -> anyhow::Result<()> {
         "token-dealer starting"
     );
 
-    let registry = Arc::new(ProviderRegistry::from_configs(&snapshot.providers).unwrap_or_else(|e| {
-        tracing::error!("provider registry build failed: {e}; starting empty");
-        ProviderRegistry::from_configs(&[]).unwrap()
-    }));
+    let registry = Arc::new(
+        ProviderRegistry::from_configs(&snapshot.providers).unwrap_or_else(|e| {
+            tracing::error!("provider registry build failed: {e}; starting empty");
+            ProviderRegistry::from_configs(&[]).unwrap()
+        }),
+    );
     let http = reqwest::Client::builder()
         .user_agent(concat!("token-dealer/", env!("CARGO_PKG_VERSION")))
         .build()
@@ -69,12 +79,10 @@ async fn main() -> anyhow::Result<()> {
                 }
                 let res = db_for_pruner
                     .with(move |conn| {
-                        Ok::<_, anyhow::Error>(
-                            conn.execute(
-                                "DELETE FROM request_log WHERE created_at < datetime('now', ?1)",
-                                rusqlite::params![format!("-{} days", days as i64)],
-                            )?,
-                        )
+                        Ok::<_, anyhow::Error>(conn.execute(
+                            "DELETE FROM request_log WHERE created_at < datetime('now', ?1)",
+                            rusqlite::params![format!("-{} days", days as i64)],
+                        )?)
                     })
                     .await;
                 match res {
@@ -87,11 +95,28 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let health = HealthRegistry::new();
-    let master = MasterKey::from_env_or_generate()?;
+    // v0.2.0 plan item 2: refuse to start when [auth].enabled
+    // and ROUTER_MASTER_KEY is missing. Plaintext dev mode
+    // (auth.enabled = false) keeps the auto-generate fallback
+    // so first-time contributors aren't blocked.
+    let master = if snapshot.auth.enabled {
+        MasterKey::from_env_strict().map_err(|e| {
+            anyhow::anyhow!("{e}\n\nHint: generate one with: head -c 32 /dev/urandom | base64")
+        })?
+    } else {
+        MasterKey::from_env_or_generate()?
+    };
     let key_store = KeyStore::new(db.clone(), &master);
     let oauth = token_dealer::oauth::OAuthManager::new(db.clone(), key_store.clone(), http.clone());
     token_dealer::oauth::spawn_refresher(oauth.clone());
     let user_store = token_dealer::auth::UserStore::new(db.clone());
+    // v0.2.0 plan item 1: bootstrap the first admin when the
+    // user table is empty and auth is enabled. The password is
+    // printed ONCE with a banner so the user can log in; rotate
+    // via `POST /admin/auth/rotate-password` after first login.
+    if snapshot.auth.enabled {
+        bootstrap_admin_if_needed(&user_store).await?;
+    }
     let pricing = token_dealer::cost::PricingStore::new(db.clone());
     let _ = pricing.seed_defaults().await;
     // Spawn the OpenRouter pricing sync background task (daily by
@@ -119,8 +144,50 @@ async fn main() -> anyhow::Result<()> {
         );
     }
     let telemetry = token_dealer::telemetry::Telemetry::init();
-    let pipeline = Pipeline::new(registry, config.clone(), http, db.clone(), health.clone(), key_store.clone(), oauth.clone(), user_store.clone(), pricing.clone());
-    let state = AppState::new(pipeline, config, health, db, metadata, key_store, oauth, user_store, pricing, telemetry);
+    // v0.2.0 plan item 3: token-bucket rate limiter, in-memory.
+    // Per-key + global, applied to chat/messages/responses only.
+    // The middleware reads `[ratelimit]` from the active config
+    // snapshot on each request, so changes via the config
+    // reload path take effect without a restart.
+    let rate_limiter = {
+        let r = &snapshot.ratelimit;
+        if r.enabled {
+            token_dealer::ratelimit::RateLimiter::new(
+                r.per_key.refill_per_minute,
+                r.per_key.burst,
+                r.global.refill_per_minute,
+                r.global.burst,
+            )
+        } else {
+            token_dealer::ratelimit::RateLimiter::disabled()
+        }
+    };
+    let pipeline = Pipeline::new(
+        registry,
+        config.clone(),
+        http,
+        db.clone(),
+        health.clone(),
+        key_store.clone(),
+        master.clone(),
+        oauth.clone(),
+        user_store.clone(),
+        pricing.clone(),
+    );
+    let state = AppState::new(
+        pipeline,
+        config,
+        health,
+        db,
+        metadata,
+        key_store,
+        master,
+        oauth,
+        user_store,
+        pricing,
+        telemetry,
+        rate_limiter,
+    );
 
     let app = build_router(state);
     let listener = tokio::net::TcpListener::bind(&bind)
@@ -167,6 +234,43 @@ async fn shutdown_signal() {
     tracing::info!("shutdown signal received");
 }
 
+/// v0.2.0 plan item 1: when auth is enabled and the user table
+/// is empty, create the first admin with a randomly generated
+/// password and print it once with a "save this" banner.
+async fn bootstrap_admin_if_needed(
+    user_store: &token_dealer::auth::UserStore,
+) -> anyhow::Result<()> {
+    let users = user_store.list_users().await?;
+    if !users.is_empty() {
+        return Ok(());
+    }
+    let password = token_dealer::auth::generate_admin_password();
+    let email = "admin@local".to_string();
+    let name = "Admin".to_string();
+    let _admin = user_store
+        .create_user(
+            &email,
+            &name,
+            Some(&password),
+            token_dealer::auth::Role::Admin,
+        )
+        .await?;
+    eprintln!();
+    eprintln!("═══════════════════════════════════════════════════════════════");
+    eprintln!("  token-dealer v0.2.0: first-run admin bootstrap");
+    eprintln!("═══════════════════════════════════════════════════════════════");
+    eprintln!("  Email:    {email}");
+    eprintln!("  Password: {password}");
+    eprintln!();
+    eprintln!("  Save this password. It will NOT be shown again.");
+    eprintln!("  Rotate it after first login:");
+    eprintln!("    POST /admin/auth/rotate-password");
+    eprintln!("    {{ \"current_password\": \"...\", \"new_password\": \"...\" }}");
+    eprintln!("═══════════════════════════════════════════════════════════════");
+    eprintln!();
+    Ok(())
+}
+
 fn run_healthcheck() -> anyhow::Result<()> {
     // For Docker HEALTHCHECK: just verify the port is accepting
     // connections. The /health endpoint is exercised by the actual
@@ -183,4 +287,84 @@ fn run_healthcheck() -> anyhow::Result<()> {
         Ok(_) => std::process::exit(0),
         Err(e) => anyhow::bail!("healthcheck failed: {e}"),
     }
+}
+
+/// `token-dealer check [--config PATH]`. Validates the config file
+/// and prints results. Returns Ok(()) on success; uses
+/// `std::process::exit` to set the right exit code so the
+/// caller can rely on `$?` rather than parsing stdout.
+fn run_check(arg_idx: usize) -> anyhow::Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+    let mut path: Option<String> = None;
+    let mut i = arg_idx + 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--config" | "-c" => {
+                i += 1;
+                if i >= args.len() {
+                    eprintln!("--config requires a path argument");
+                    std::process::exit(2);
+                }
+                path = Some(args[i].clone());
+            }
+            "-h" | "--help" => {
+                println!("token-dealer check [--config PATH]");
+                println!();
+                println!("Validate token-dealer.toml without starting the server.");
+                println!("Exit codes:");
+                println!("  0  config is clean (no errors, no warnings)");
+                println!("  1  config is invalid (would refuse to start)");
+                println!("  2  config is valid with warnings (will start)");
+                std::process::exit(0);
+            }
+            other => {
+                eprintln!("unknown argument: {other}");
+                std::process::exit(2);
+            }
+        }
+        i += 1;
+    }
+    let path = path
+        .or_else(|| std::env::var("TOKEN_DEALER_CONFIG").ok())
+        .unwrap_or_else(|| "token-dealer.toml".to_string());
+
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            println!("token-dealer check: {path}: file not found");
+            // Per the v0.2.0 plan (item 5 first-run semantics),
+            // a missing config is the auto-generate path on
+            // server start, not a validation failure here.
+            std::process::exit(2);
+        }
+        Err(e) => {
+            eprintln!("token-dealer check: {path}: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    let outcome = validate_config(&raw);
+
+    if !outcome.errors.is_empty() {
+        eprintln!("{}: {} error(s):", path, outcome.errors.len());
+        for e in &outcome.errors {
+            eprintln!("  error   {}: {}", e.path, e.reason);
+        }
+    }
+    if !outcome.warnings.is_empty() {
+        eprintln!("{}: {} warning(s):", path, outcome.warnings.len());
+        for w in &outcome.warnings {
+            eprintln!("  warn    {}: {}", w.path, w.reason);
+        }
+    }
+
+    if outcome.has_errors() {
+        std::process::exit(1);
+    }
+    if outcome.has_warnings() {
+        println!("{path}: ok with warnings");
+        std::process::exit(2);
+    }
+    println!("{path}: ok");
+    Ok(())
 }

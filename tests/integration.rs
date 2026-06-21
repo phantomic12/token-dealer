@@ -19,7 +19,6 @@ use token_dealer::{
     AppState,
 };
 use tower::ServiceExt;
-use uuid::Uuid;
 use wiremock::{
     matchers::{header, header_exists, method, path},
     Mock, MockServer, ResponseTemplate,
@@ -27,6 +26,11 @@ use wiremock::{
 
 async fn make_state(mock_base: &str) -> AppState {
     let mut cfg = RouterConfig::default();
+    // Tests run without an API key on the inbound side — the
+    // provider's key ("test-key") is what we set in the
+    // outbound call. Disable auth so the auth middleware
+    // doesn't 401 these requests.
+    cfg.auth.enabled = false;
     cfg.providers.push(ProviderConfig {
         id: "mock".to_string(),
         provider_type: ProviderType::Openai,
@@ -48,11 +52,8 @@ async fn make_state(mock_base: &str) -> AppState {
     );
     // Serialize → load via ConfigService so we exercise the same path.
     let toml = toml::to_string(&cfg).unwrap();
-    let dir = tempfile_or_stdout();
-    let tmp = std::env::temp_dir().join(format!(
-        "token-dealer-test-{}.toml",
-        uuid::Uuid::new_v4()
-    ));
+    tempfile_or_stdout();
+    let tmp = std::env::temp_dir().join(format!("token-dealer-test-{}.toml", uuid::Uuid::new_v4()));
     std::fs::write(&tmp, toml).unwrap();
     let svc = ConfigService::load(&tmp).await.unwrap();
     let _ = std::fs::remove_file(&tmp);
@@ -67,11 +68,7 @@ async fn make_state(mock_base: &str) -> AppState {
         db.clone(),
         &token_dealer::auth::MasterKey::from_env_or_generate().unwrap(),
     );
-    let oauth = token_dealer::oauth::OAuthManager::new(
-        db.clone(),
-        key_store.clone(),
-        http.clone(),
-    );
+    let oauth = token_dealer::oauth::OAuthManager::new(db.clone(), key_store.clone(), http.clone());
     let user_store = token_dealer::auth::UserStore::new(db.clone());
     let pricing = token_dealer::cost::PricingStore::new(db.clone());
     let pipeline = Pipeline::new(
@@ -81,11 +78,11 @@ async fn make_state(mock_base: &str) -> AppState {
         db.clone(),
         HealthRegistry::new(),
         key_store.clone(),
+        token_dealer::auth::MasterKey::from_env_or_generate().unwrap(),
         oauth.clone(),
         user_store.clone(),
         pricing.clone(),
     );
-    let _ = dir;
     let metadata = token_dealer::metadata::MetadataStore::new();
     let user_store = token_dealer::auth::UserStore::new(db.clone());
     let pricing = token_dealer::cost::PricingStore::new(db.clone());
@@ -97,14 +94,16 @@ async fn make_state(mock_base: &str) -> AppState {
         db,
         metadata,
         key_store,
+        token_dealer::auth::MasterKey::from_env_or_generate().unwrap(),
         oauth,
         user_store,
         pricing,
         telemetry,
+        token_dealer::ratelimit::RateLimiter::disabled(),
     )
 }
 
-fn tempfile_or_stdout() -> () {
+fn tempfile_or_stdout() {
     // placeholder so we can return () in async fn
 }
 
@@ -123,11 +122,11 @@ fn build_test_canonical_request() -> token_dealer::schema::canonical::CanonicalR
         tools: None,
         tool_choice: None,
         tier: Tier::Standard,
-                selected_model: "test-model".to_string(),
-                selected_provider: "test".to_string(),
-                request_id: uuid::Uuid::new_v4(),
-                extensions: std::collections::HashMap::new(),
-                metadata: token_dealer::schema::canonical::CanonicalMetadata::default(),
+        selected_model: "test-model".to_string(),
+        selected_provider: "test".to_string(),
+        request_id: uuid::Uuid::new_v4(),
+        extensions: std::collections::HashMap::new(),
+        metadata: token_dealer::schema::canonical::CanonicalMetadata::default(),
     }
 }
 
@@ -179,9 +178,7 @@ async fn chat_completion_routes_to_provider_and_strips_headers() {
     let resp = app.oneshot(req).await.unwrap();
     let status = resp.status();
     let h = resp.headers().clone();
-    let body_bytes = axum::body::to_bytes(resp.into_body(), 65536)
-        .await
-        .unwrap();
+    let body_bytes = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
     let body: Value = serde_json::from_slice(&body_bytes).unwrap();
     assert_eq!(status, StatusCode::OK, "body: {body}");
     assert_eq!(h.get("x-router-provider").unwrap(), "mock");
@@ -298,7 +295,10 @@ async fn non_standard_path_provider_routes_correctly() {
         .await;
 
     let mut cfg = RouterConfig::default();
-    cfg.database = DatabaseConfig { path: ":memory:".to_string() };
+    cfg.auth.enabled = false;
+    cfg.database = DatabaseConfig {
+        path: ":memory:".to_string(),
+    };
     cfg.providers.push(ProviderConfig {
         id: "kilo".to_string(),
         provider_type: ProviderType::Kilo,
@@ -333,11 +333,7 @@ async fn non_standard_path_provider_routes_correctly() {
         db.clone(),
         &token_dealer::auth::MasterKey::from_env_or_generate().unwrap(),
     );
-    let oauth = token_dealer::oauth::OAuthManager::new(
-        db.clone(),
-        key_store.clone(),
-        http.clone(),
-    );
+    let oauth = token_dealer::oauth::OAuthManager::new(db.clone(), key_store.clone(), http.clone());
     let user_store = token_dealer::auth::UserStore::new(db.clone());
     let pricing = token_dealer::cost::PricingStore::new(db.clone());
     let pipeline = Pipeline::new(
@@ -347,6 +343,7 @@ async fn non_standard_path_provider_routes_correctly() {
         db.clone(),
         HealthRegistry::new(),
         key_store.clone(),
+        token_dealer::auth::MasterKey::from_env_or_generate().unwrap(),
         oauth.clone(),
         user_store.clone(),
         pricing.clone(),
@@ -361,10 +358,12 @@ async fn non_standard_path_provider_routes_correctly() {
         db,
         token_dealer::metadata::MetadataStore::new(),
         key_store,
+        token_dealer::auth::MasterKey::from_env_or_generate().unwrap(),
         oauth,
         user_store,
         pricing,
         telemetry,
+        token_dealer::ratelimit::RateLimiter::disabled(),
     );
     let app = build_router(state);
 
@@ -447,7 +446,10 @@ async fn fallback_chain_skips_500_provider_to_next() {
         .await;
 
     let mut cfg = RouterConfig::default();
-    cfg.database = DatabaseConfig { path: ":memory:".to_string() };
+    cfg.auth.enabled = false;
+    cfg.database = DatabaseConfig {
+        path: ":memory:".to_string(),
+    };
     cfg.providers.push(ProviderConfig {
         id: "primary".to_string(),
         provider_type: ProviderType::Openai,
@@ -491,11 +493,7 @@ async fn fallback_chain_skips_500_provider_to_next() {
         db.clone(),
         &token_dealer::auth::MasterKey::from_env_or_generate().unwrap(),
     );
-    let oauth = token_dealer::oauth::OAuthManager::new(
-        db.clone(),
-        key_store.clone(),
-        http.clone(),
-    );
+    let oauth = token_dealer::oauth::OAuthManager::new(db.clone(), key_store.clone(), http.clone());
     let user_store = token_dealer::auth::UserStore::new(db.clone());
     let pricing = token_dealer::cost::PricingStore::new(db.clone());
     let pipeline = Pipeline::new(
@@ -505,6 +503,7 @@ async fn fallback_chain_skips_500_provider_to_next() {
         db.clone(),
         HealthRegistry::new(),
         key_store.clone(),
+        token_dealer::auth::MasterKey::from_env_or_generate().unwrap(),
         oauth.clone(),
         user_store.clone(),
         pricing.clone(),
@@ -519,10 +518,12 @@ async fn fallback_chain_skips_500_provider_to_next() {
         db,
         token_dealer::metadata::MetadataStore::new(),
         key_store,
+        token_dealer::auth::MasterKey::from_env_or_generate().unwrap(),
         oauth,
         user_store,
         pricing,
         telemetry,
+        token_dealer::ratelimit::RateLimiter::disabled(),
     );
     let app = build_router(state);
 
@@ -593,13 +594,19 @@ async fn request_log_persists_after_completion() {
         .with(|conn| Ok(token_dealer::db::queries::count_requests(conn)?))
         .await
         .unwrap();
-    assert!(count >= 1, "expected at least 1 logged request, got {count}");
+    assert!(
+        count >= 1,
+        "expected at least 1 logged request, got {count}"
+    );
 }
 
 #[tokio::test]
 async fn auth_rejects_request_with_wrong_key() {
     let mut cfg = RouterConfig::default();
-    cfg.database = DatabaseConfig { path: ":memory:".to_string() };
+    cfg.auth.enabled = false;
+    cfg.database = DatabaseConfig {
+        path: ":memory:".to_string(),
+    };
     cfg.auth.enabled = true;
     cfg.auth.keys.push(token_dealer::config::AuthKey {
         key: "right-key".to_string(),
@@ -620,11 +627,7 @@ async fn auth_rejects_request_with_wrong_key() {
         db.clone(),
         &token_dealer::auth::MasterKey::from_env_or_generate().unwrap(),
     );
-    let oauth = token_dealer::oauth::OAuthManager::new(
-        db.clone(),
-        key_store.clone(),
-        http.clone(),
-    );
+    let oauth = token_dealer::oauth::OAuthManager::new(db.clone(), key_store.clone(), http.clone());
     let user_store = token_dealer::auth::UserStore::new(db.clone());
     let pricing = token_dealer::cost::PricingStore::new(db.clone());
     let pipeline = Pipeline::new(
@@ -634,6 +637,7 @@ async fn auth_rejects_request_with_wrong_key() {
         db.clone(),
         HealthRegistry::new(),
         key_store.clone(),
+        token_dealer::auth::MasterKey::from_env_or_generate().unwrap(),
         oauth.clone(),
         user_store.clone(),
         pricing.clone(),
@@ -648,10 +652,12 @@ async fn auth_rejects_request_with_wrong_key() {
         db,
         token_dealer::metadata::MetadataStore::new(),
         key_store,
+        token_dealer::auth::MasterKey::from_env_or_generate().unwrap(),
         oauth,
         user_store,
         pricing,
         telemetry,
+        token_dealer::ratelimit::RateLimiter::disabled(),
     );
 
     // No auth header
@@ -697,14 +703,10 @@ async fn auth_rejects_request_with_wrong_key() {
 async fn circuit_breaker_skips_provider_in_cooldown() {
     use token_dealer::providers::HealthRegistry;
     use token_dealer::proxy::fallback::{self, HealthHook, ProviderHandle, RoutingPlan};
-    use token_dealer::schema::canonical::{CanonicalRequest, Tier};
-    use uuid::Uuid;
 
     let registry = HealthRegistry::new();
     // Mark "down" as down with an active cooldown
-    registry
-        .record_failure("down-provider", 1, 60)
-        .await;
+    registry.record_failure("down-provider", 1, 60).await;
 
     let hook = HealthHook {
         registry: registry.clone(),
@@ -727,20 +729,12 @@ async fn circuit_breaker_skips_provider_in_cooldown() {
     // so it gets skipped (no record_success / record_failure), then
     // moves to the fallback. Since the fallback provider has no
     // adapter registered, the result is "all fallbacks exhausted".
-    let result = fallback::execute(
-        plan,
-        |_pid| async move { None::<ProviderHandle> },
-        &hook,
-    )
-    .await;
+    let result = fallback::execute(plan, |_pid| async move { None::<ProviderHandle> }, &hook).await;
 
     // We expect an error because no providers returned an adapter
     let err = result.unwrap_err();
     let msg = format!("{err}");
-    assert!(
-        msg.contains("all fallbacks exhausted"),
-        "got: {msg}"
-    );
+    assert!(msg.contains("all fallbacks exhausted"), "got: {msg}");
 }
 
 #[tokio::test]
@@ -789,23 +783,33 @@ async fn rules_add_and_delete_persist() {
 #[tokio::test]
 async fn encrypted_credential_round_trip() {
     use token_dealer::auth::{KeyStore, MasterKey};
-    let db = Db::open(&DatabaseConfig { path: ":memory:".to_string() }).unwrap();
+    let db = Db::open(&DatabaseConfig {
+        path: ":memory:".to_string(),
+    })
+    .unwrap();
     let master = MasterKey::from_env_or_generate().unwrap();
     let store = KeyStore::new(db.clone(), &master);
-    store.set("anthropic", "sk-test-plaintext-12345").await.unwrap();
+    store
+        .set("anthropic", "sk-test-plaintext-12345")
+        .await
+        .unwrap();
     let got = store.get("anthropic").await.unwrap().unwrap();
     assert_eq!(got, "sk-test-plaintext-12345");
     // Verify the on-disk row is actually encrypted (not plaintext)
     let raw: String = db
         .with(|conn| {
-            let mut stmt = conn
-                .prepare("SELECT ciphertext FROM provider_credentials WHERE provider_id = 'anthropic'")?;
+            let mut stmt = conn.prepare(
+                "SELECT ciphertext FROM provider_credentials WHERE provider_id = 'anthropic'",
+            )?;
             let row: Vec<u8> = stmt.query_row([], |r| r.get(0))?;
             Ok(String::from_utf8_lossy(&row).to_string())
         })
         .await
         .unwrap();
-    assert!(!raw.contains("sk-test-plaintext"), "ciphertext leaked plaintext");
+    assert!(
+        !raw.contains("sk-test-plaintext"),
+        "ciphertext leaked plaintext"
+    );
     // Decryption with wrong key should fail. We can't easily
     // construct a second MasterKey without exposing from_hex, so
     // we test the round-trip only. The auth.rs from_env_or_generate
@@ -876,7 +880,10 @@ async fn image_endpoint_passes_through_to_provider() {
         .await;
 
     let mut cfg = RouterConfig::default();
-    cfg.database = DatabaseConfig { path: ":memory:".to_string() };
+    cfg.auth.enabled = false;
+    cfg.database = DatabaseConfig {
+        path: ":memory:".to_string(),
+    };
     cfg.providers.push(ProviderConfig {
         id: "openai".to_string(),
         provider_type: ProviderType::Openai,
@@ -900,11 +907,7 @@ async fn image_endpoint_passes_through_to_provider() {
         db.clone(),
         &token_dealer::auth::MasterKey::from_env_or_generate().unwrap(),
     );
-    let oauth = token_dealer::oauth::OAuthManager::new(
-        db.clone(),
-        key_store.clone(),
-        http.clone(),
-    );
+    let oauth = token_dealer::oauth::OAuthManager::new(db.clone(), key_store.clone(), http.clone());
     let user_store = token_dealer::auth::UserStore::new(db.clone());
     let pricing = token_dealer::cost::PricingStore::new(db.clone());
     let pipeline = Pipeline::new(
@@ -914,6 +917,7 @@ async fn image_endpoint_passes_through_to_provider() {
         db.clone(),
         HealthRegistry::new(),
         key_store.clone(),
+        token_dealer::auth::MasterKey::from_env_or_generate().unwrap(),
         oauth.clone(),
         user_store.clone(),
         pricing.clone(),
@@ -928,10 +932,12 @@ async fn image_endpoint_passes_through_to_provider() {
         db,
         token_dealer::metadata::MetadataStore::new(),
         key_store,
+        token_dealer::auth::MasterKey::from_env_or_generate().unwrap(),
         oauth,
         user_store,
         pricing,
         telemetry,
+        token_dealer::ratelimit::RateLimiter::disabled(),
     );
     let app = build_router(state);
 
@@ -964,9 +970,13 @@ async fn make_state_with_specificity(
     mock_base: &str,
     mock_id: &str,
     specificity: SpecificityConfig,
+    extra_provider: Option<(&str, &str, &str)>,
 ) -> AppState {
     let mut cfg = RouterConfig::default();
-    cfg.database = DatabaseConfig { path: ":memory:".to_string() };
+    cfg.auth.enabled = false;
+    cfg.database = DatabaseConfig {
+        path: ":memory:".to_string(),
+    };
     cfg.providers.push(ProviderConfig {
         id: mock_id.to_string(),
         provider_type: ProviderType::Openai,
@@ -975,6 +985,16 @@ async fn make_state_with_specificity(
         default_model: Some(format!("{mock_id}-model")),
         path: None,
     });
+    if let Some((base, id, model)) = extra_provider {
+        cfg.providers.push(ProviderConfig {
+            id: id.to_string(),
+            provider_type: ProviderType::Generic,
+            key: Some("test-key".to_string()),
+            base_url: Some(base.to_string()),
+            default_model: Some(model.to_string()),
+            path: None,
+        });
+    }
     cfg.tiers.insert(
         "standard".to_string(),
         TierConfig {
@@ -987,10 +1007,7 @@ async fn make_state_with_specificity(
         },
     );
     cfg.specificity = specificity;
-    let tmp = std::env::temp_dir().join(format!(
-        "td-spec-{}.toml",
-        uuid::Uuid::new_v4()
-    ));
+    let tmp = std::env::temp_dir().join(format!("td-spec-{}.toml", uuid::Uuid::new_v4()));
     std::fs::write(&tmp, toml::to_string(&cfg).unwrap()).unwrap();
     let svc = ConfigService::load(&tmp).await.unwrap();
     let _ = std::fs::remove_file(&tmp);
@@ -1015,6 +1032,7 @@ async fn make_state_with_specificity(
         db.clone(),
         HealthRegistry::new(),
         key_store.clone(),
+        token_dealer::auth::MasterKey::from_env_or_generate().unwrap(),
         oauth.clone(),
         user_store.clone(),
         pricing.clone(),
@@ -1026,10 +1044,12 @@ async fn make_state_with_specificity(
         db,
         token_dealer::metadata::MetadataStore::new(),
         key_store,
+        token_dealer::auth::MasterKey::from_env_or_generate().unwrap(),
         oauth,
         user_store,
         pricing,
         token_dealer::telemetry::Telemetry::init(),
+        token_dealer::ratelimit::RateLimiter::disabled(),
     )
 }
 
@@ -1068,10 +1088,11 @@ async fn specificity_routing_overrides_tier_when_keywords_match() {
             enabled: true,
             rules: vec![SpecificityRule {
                 category: SpecificityCategory::Coding,
-                primary: format!("specific/spec-model"),
+                primary: "specific/spec-model".to_string(),
                 threshold: None,
             }],
         },
+        Some((&spec_server.uri(), "specific", "spec-model")),
     )
     .await;
     // Add the "specific" provider both to the config snapshot (the
@@ -1132,10 +1153,7 @@ async fn specificity_routing_overrides_tier_when_keywords_match() {
     // Coding keywords fire: should route to "specific"
     assert_eq!(h.get("x-router-provider").unwrap(), "specific");
     assert_eq!(h.get("x-router-specificity").unwrap(), "coding");
-    assert_eq!(
-        body["choices"][0]["message"]["content"],
-        "specificity-pick"
-    );
+    assert_eq!(body["choices"][0]["message"]["content"], "specificity-pick");
 }
 
 #[tokio::test]
@@ -1159,10 +1177,11 @@ async fn specificity_disabled_falls_through_to_tier() {
             enabled: false, // disabled
             rules: vec![SpecificityRule {
                 category: SpecificityCategory::Coding,
-                primary: "specific/spec-model".to_string(),
+                primary: "tier/tier-model".to_string(),
                 threshold: None,
             }],
         },
+        None,
     )
     .await;
 
@@ -1210,6 +1229,9 @@ async fn make_state_with_provider(
     default_model: &str,
 ) -> AppState {
     let mut cfg = RouterConfig::default();
+    // Tests run without an inbound API key — disable auth so
+    // the auth middleware doesn't 401 these requests.
+    cfg.auth.enabled = false;
     cfg.providers.push(ProviderConfig {
         id: id.to_string(),
         provider_type,
@@ -1238,8 +1260,7 @@ async fn make_state_with_provider(
     let svc = ConfigService::load(&tmp).await.unwrap();
     let _ = std::fs::remove_file(&tmp);
     let snap = svc.snapshot().await;
-    let registry =
-        Arc::new(ProviderRegistry::from_configs(&snap.providers).unwrap());
+    let registry = Arc::new(ProviderRegistry::from_configs(&snap.providers).unwrap());
     let http = reqwest::Client::builder()
         .timeout(Duration::from_secs(5))
         .build()
@@ -1249,11 +1270,7 @@ async fn make_state_with_provider(
         db.clone(),
         &token_dealer::auth::MasterKey::from_env_or_generate().unwrap(),
     );
-    let oauth = token_dealer::oauth::OAuthManager::new(
-        db.clone(),
-        key_store.clone(),
-        http.clone(),
-    );
+    let oauth = token_dealer::oauth::OAuthManager::new(db.clone(), key_store.clone(), http.clone());
     let user_store = token_dealer::auth::UserStore::new(db.clone());
     let pricing = token_dealer::cost::PricingStore::new(db.clone());
     let pipeline = Pipeline::new(
@@ -1263,6 +1280,7 @@ async fn make_state_with_provider(
         db.clone(),
         HealthRegistry::new(),
         key_store.clone(),
+        token_dealer::auth::MasterKey::from_env_or_generate().unwrap(),
         oauth.clone(),
         user_store.clone(),
         pricing.clone(),
@@ -1279,10 +1297,12 @@ async fn make_state_with_provider(
         db,
         token_dealer::metadata::MetadataStore::new(),
         key_store,
+        token_dealer::auth::MasterKey::from_env_or_generate().unwrap(),
         oauth,
         user_store_outer,
         pricing_outer,
         telemetry,
+        token_dealer::ratelimit::RateLimiter::disabled(),
     )
 }
 
@@ -1342,9 +1362,7 @@ async fn anthropic_adapter_translates_request_and_response() {
     let resp = app.oneshot(req).await.unwrap();
     let status = resp.status();
     let h = resp.headers().clone();
-    let body_bytes = axum::body::to_bytes(resp.into_body(), 65536)
-        .await
-        .unwrap();
+    let body_bytes = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
     let body: Value = serde_json::from_slice(&body_bytes).unwrap();
     assert_eq!(status, StatusCode::OK, "anthropic body: {body}");
     assert_eq!(h.get("x-router-provider").unwrap(), "anthropic");
@@ -1412,15 +1430,10 @@ async fn google_adapter_translates_request_and_response() {
         .unwrap();
     let resp = app.oneshot(req).await.unwrap();
     let status = resp.status();
-    let body_bytes = axum::body::to_bytes(resp.into_body(), 65536)
-        .await
-        .unwrap();
+    let body_bytes = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
     let body: Value = serde_json::from_slice(&body_bytes).unwrap();
     assert_eq!(status, StatusCode::OK, "google body: {body}");
-    assert_eq!(
-        body["choices"][0]["message"]["content"],
-        "hi from gemini"
-    );
+    assert_eq!(body["choices"][0]["message"]["content"], "hi from gemini");
     assert_eq!(body["usage"]["prompt_tokens"], 9);
     assert_eq!(body["usage"]["completion_tokens"], 4);
 }
@@ -1474,16 +1487,10 @@ async fn xai_adapter_uses_bearer_and_openai_shape() {
     let resp = app.oneshot(req).await.unwrap();
     let status = resp.status();
     let h = resp.headers().clone();
-    let body_bytes = axum::body::to_bytes(resp.into_body(), 65536)
-        .await
-        .unwrap();
+    let body_bytes = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
     let body: Value = serde_json::from_slice(&body_bytes).unwrap();
     assert_eq!(status, StatusCode::OK, "xai body: {body}");
     assert_eq!(h.get("x-router-provider").unwrap(), "xai");
-    assert_eq!(
-        body["choices"][0]["message"]["content"],
-        "hello from grok"
-    );
+    assert_eq!(body["choices"][0]["message"]["content"], "hello from grok");
     assert_eq!(body["usage"]["total_tokens"], 7);
 }
-

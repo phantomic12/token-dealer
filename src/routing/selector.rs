@@ -26,9 +26,7 @@ impl Selector {
     /// Resolve a fully-qualified `provider/model` string.
     pub async fn route_explicit(&self, model_ref: &str) -> Option<SelectedRoute> {
         let (p, m) = ProviderRegistry::split_model_ref(model_ref)?;
-        if self.registry.get(&p).await.is_none() {
-            return None;
-        }
+        self.registry.get(&p).await.as_ref()?;
         Some(SelectedRoute {
             provider_id: p,
             model_id: m,

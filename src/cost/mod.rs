@@ -15,10 +15,10 @@ use crate::providers::manifest;
 use crate::providers::resolve_alias;
 use crate::tokens;
 
-pub mod openrouter_sync;
 pub mod limits;
+pub mod openrouter_sync;
 
-pub use openrouter_sync::{sync_once, spawn_pricing_sync};
+pub use openrouter_sync::{spawn_pricing_sync, sync_once};
 
 /// DB-backed pricing store. Holds the `model_prices` table and
 /// provides per-(provider, model) cost lookups.
@@ -130,7 +130,8 @@ impl PricingStore {
         let mut n = 0;
         for (model_id, (in_p, out_p), modality) in seeds {
             if self.get(model_id).await?.is_none() {
-                self.upsert(model_id, in_p, out_p, 128_000, modality).await?;
+                self.upsert(model_id, in_p, out_p, 128_000, modality)
+                    .await?;
                 n += 1;
             }
         }
@@ -177,7 +178,10 @@ pub fn calculate_with_db(
     let meta = manifest_lookup_by_id(provider_id)?;
     let is_default = meta.default_model == model_id;
     let (in_price, out_price) = if is_default {
-        (default_price_in(provider_id), default_price_out(provider_id))
+        (
+            default_price_in(provider_id),
+            default_price_out(provider_id),
+        )
     } else {
         (
             default_price_in(provider_id) * 1.5,
@@ -189,10 +193,7 @@ pub fn calculate_with_db(
     Some(cost)
 }
 
-fn model_id_to_row(
-    pricing: &PricingStore,
-    model_id: &str,
-) -> anyhow::Result<Option<ModelPrice>> {
+fn model_id_to_row(pricing: &PricingStore, model_id: &str) -> anyhow::Result<Option<ModelPrice>> {
     // Block on the async — this is a small helper called from the
     // sync `calculate_with_db` path. We're inside an async pipeline
     // path; the cost calc is a small overhead.
@@ -250,7 +251,11 @@ fn default_price_seeds() -> Vec<(&'static str, (f64, f64), u32)> {
         // OpenRouter (passthrough — varies)
         ("openrouter/anthropic/claude-sonnet-4-5", (3.0, 15.0), 1),
         // Fireworks
-        ("fireworks/accounts/fireworks/models/llama-v3p3-70b-instruct", (0.90, 0.90), 1),
+        (
+            "fireworks/accounts/fireworks/models/llama-v3p3-70b-instruct",
+            (0.90, 0.90),
+            1,
+        ),
         // Qwen
         ("qwen/qwen-plus", (0.40, 1.20), 1),
         ("qwen/qwen-max", (2.40, 9.60), 1),

@@ -57,12 +57,7 @@ impl MetadataStore {
     }
 
     pub async fn all(&self) -> Vec<ModelMetadata> {
-        self.inner
-            .read()
-            .await
-            .values()
-            .cloned()
-            .collect()
+        self.inner.read().await.values().cloned().collect()
     }
 }
 
@@ -111,24 +106,16 @@ pub async fn fetch_from_models_dev() -> anyhow::Result<Vec<ModelMetadata>> {
                         supports_audio: modalities
                             .get("input")
                             .and_then(|v| v.as_array())
-            .map(|arr| arr.iter().any(|s| s.as_str() == Some("audio")))
-            .unwrap_or(false),
+                            .map(|arr| arr.iter().any(|s| s.as_str() == Some("audio")))
+                            .unwrap_or(false),
                         supports_reasoning: m
                             .get("reasoning")
                             .and_then(|v| v.as_bool())
                             .unwrap_or(false),
-                        input_per_million: cost
-                            .get("input")
-                            .and_then(|v| v.as_f64()),
-                        output_per_million: cost
-                            .get("output")
-                            .and_then(|v| v.as_f64()),
-                        cache_read_per_million: cost
-                            .get("cache_read")
-                            .and_then(|v| v.as_f64()),
-                        cache_write_per_million: cost
-                            .get("cache_write")
-                            .and_then(|v| v.as_f64()),
+                        input_per_million: cost.get("input").and_then(|v| v.as_f64()),
+                        output_per_million: cost.get("output").and_then(|v| v.as_f64()),
+                        cache_read_per_million: cost.get("cache_read").and_then(|v| v.as_f64()),
+                        cache_write_per_million: cost.get("cache_write").and_then(|v| v.as_f64()),
                         source: "models_dev".to_string(),
                     };
                     out.push(meta);

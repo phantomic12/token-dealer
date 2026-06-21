@@ -60,11 +60,7 @@ struct OpenRouterResponse {
 }
 
 /// Fetch and persist. Returns the number of rows upserted.
-pub async fn sync_once(
-    http: &reqwest::Client,
-    db: &Db,
-    url: &str,
-) -> anyhow::Result<usize> {
+pub async fn sync_once(http: &reqwest::Client, db: &Db, url: &str) -> anyhow::Result<usize> {
     let resp = http
         .get(url)
         .timeout(Duration::from_secs(30))

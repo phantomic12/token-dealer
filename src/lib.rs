@@ -13,6 +13,7 @@ pub mod metadata;
 pub mod oauth;
 pub mod providers;
 pub mod proxy;
+pub mod ratelimit;
 pub mod routing;
 pub mod schema;
 pub mod server;
@@ -30,10 +31,18 @@ pub struct AppState {
     pub db: db::Db,
     pub metadata: metadata::MetadataStore,
     pub key_store: auth::KeyStore,
+    /// Master key used to decrypt `enc:`-prefixed values in
+    /// config and to derive per-purpose subkeys. Required by
+    /// v0.2.0 when `[auth] enabled = true`.
+    pub master: auth::MasterKey,
     pub oauth: oauth::OAuthManager,
     pub user_store: auth::UserStore,
     pub pricing: cost::PricingStore,
     pub telemetry: telemetry::Telemetry,
+    /// Token-bucket rate limiter, shared across requests. Reads
+    /// `[ratelimit]` config on every request, so the active
+    /// configuration can change without a restart.
+    pub rate_limiter: ratelimit::RateLimiter,
     /// Server-Sent Events broadcast bus. Lazily initialized by the
     /// SSE handler; cheap to clone (broadcast::Sender).
     pub events: Arc<server::events::EventBus>,
@@ -48,10 +57,12 @@ impl AppState {
         db: db::Db,
         metadata: metadata::MetadataStore,
         key_store: auth::KeyStore,
+        master: auth::MasterKey,
         oauth: oauth::OAuthManager,
         user_store: auth::UserStore,
         pricing: cost::PricingStore,
         telemetry: telemetry::Telemetry,
+        rate_limiter: ratelimit::RateLimiter,
     ) -> Self {
         Self {
             pipeline: Arc::new(pipeline),
@@ -60,10 +71,12 @@ impl AppState {
             db,
             metadata,
             key_store,
+            master,
             oauth,
             user_store,
             pricing,
             telemetry,
+            rate_limiter,
             events: Arc::new(server::events::EventBus::default()),
         }
     }

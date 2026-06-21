@@ -5,16 +5,16 @@
 //! before any bytes hit the client, but mid-stream fallbacks are
 //! not (per design).
 
-use super::fallback::{self, ExecutionResult, ProviderHandle, RoutingPlan};
+use super::super::auth::resolve as resolve_key;
 use super::super::config::ConfigService;
 use super::super::error::{AppError, AppResult};
-use super::super::auth::resolve as resolve_key;
 use super::super::providers::ProviderRegistry;
 use super::super::schema::canonical::{CanonicalRequest, CanonicalResponse, Tier};
 use super::super::schema::inbound::{InboundRequest, PreRouting};
+use super::fallback::{self, ExecutionResult, ProviderHandle, RoutingPlan};
 use crate::routing::selector::{SelectedRoute, Selector};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use uuid::Uuid;
 
 #[derive(Clone)]
@@ -26,6 +26,9 @@ pub struct Pipeline {
     pub db: crate::db::Db,
     pub health: crate::providers::HealthRegistry,
     pub key_store: crate::auth::KeyStore,
+    /// Master key for decrypting `enc:`-prefixed values at
+    /// dispatch time. Mirrors the AppState field.
+    pub master: crate::auth::MasterKey,
     pub oauth: crate::oauth::OAuthManager,
     pub user_store: crate::auth::UserStore,
     pub pricing: crate::cost::PricingStore,
@@ -44,6 +47,7 @@ pub struct RoutingOutput {
 }
 
 impl Pipeline {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         registry: Arc<ProviderRegistry>,
         config: ConfigService,
@@ -51,6 +55,7 @@ impl Pipeline {
         db: crate::db::Db,
         health: crate::providers::HealthRegistry,
         key_store: crate::auth::KeyStore,
+        master: crate::auth::MasterKey,
         oauth: crate::oauth::OAuthManager,
         user_store: crate::auth::UserStore,
         pricing: crate::cost::PricingStore,
@@ -64,6 +69,7 @@ impl Pipeline {
             db,
             health,
             key_store,
+            master,
             oauth,
             user_store,
             pricing,
@@ -81,17 +87,13 @@ impl Pipeline {
         let cfg = self.config.snapshot().await;
 
         let route = if let Some(m) = model_override {
-            self.selector
-                .route_explicit(&m)
-                .await
-                .ok_or_else(|| AppError::BadRequest(format!("unknown provider in model ref: {m}")))?
+            self.selector.route_explicit(&m).await.ok_or_else(|| {
+                AppError::BadRequest(format!("unknown provider in model ref: {m}"))
+            })?
         } else {
-            self.selector
-                .route_tier(&cfg, tier)
-                .await
-                .ok_or_else(|| {
-                    AppError::Internal(format!("no primary configured for tier {}", tier.as_str()))
-                })?
+            self.selector.route_tier(&cfg, tier).await.ok_or_else(|| {
+                AppError::Internal(format!("no primary configured for tier {}", tier.as_str()))
+            })?
         };
 
         let request_id = Uuid::new_v4();
@@ -113,11 +115,13 @@ impl Pipeline {
             // If the provider has OAuth config, prefer the access token
             // from the OAuth manager. The user-facing `key` field is
             // treated as a refresh token in that case.
-            let resolved = resolve_key(&self.key_store, &route.provider_id, cfg_key).await;
+            let resolved =
+                resolve_key(&self.key_store, &self.master, &route.provider_id, cfg_key).await;
             if let Some(pt) = crate::providers::resolve_alias(&route.provider_id) {
                 if let Some(m) = crate::providers::manifest::lookup(pt) {
                     if m.oauth.is_some() {
-                        if let Ok(Some(access)) = self.oauth.access_token(&route.provider_id).await {
+                        if let Ok(Some(access)) = self.oauth.access_token(&route.provider_id).await
+                        {
                             access
                         } else {
                             // OAuth not set up yet — fall back to the
@@ -181,34 +185,40 @@ impl Pipeline {
         let registry = self.registry.clone();
         let config = self.config.clone();
         let key_store = self.key_store.clone();
+        let master = self.master.clone();
         let health_hook = super::fallback::HealthHook {
             registry: self.health.clone(),
             failure_threshold: cfg.retry.max_same_provider_retries.max(1),
             cooldown_secs: 60, // default; tunable via config in phase 2
         };
-        let result = fallback::execute(plan, move |pid: &str| {
-            let r = registry.clone();
-            let c = config.clone();
-            let ks = key_store.clone();
-            let p = pid.to_string();
-            async move {
-                let g = r.read().await;
-                let adapter = g.get(&p)?.clone();
-                let snap = c.snapshot().await;
-                let cfg_key = snap
-                    .providers
-                    .iter()
-                    .find(|prov| prov.id == p)
-                    .and_then(|prov| prov.key.as_deref());
-                let key = resolve_key(&ks, &p, cfg_key).await;
-                Some(ProviderHandle {
-                    provider_id: p,
-                    model_id: adapter.default_model().to_string(),
-                    adapter,
-                    key,
-                })
-            }
-        }, &health_hook)
+        let result = fallback::execute(
+            plan,
+            move |pid: &str| {
+                let r = registry.clone();
+                let c = config.clone();
+                let ks = key_store.clone();
+                let m = master.clone();
+                let p = pid.to_string();
+                async move {
+                    let g = r.read().await;
+                    let adapter = g.get(&p)?.clone();
+                    let snap = c.snapshot().await;
+                    let cfg_key = snap
+                        .providers
+                        .iter()
+                        .find(|prov| prov.id == p)
+                        .and_then(|prov| prov.key.as_deref());
+                    let key = resolve_key(&ks, &m, &p, cfg_key).await;
+                    Some(ProviderHandle {
+                        provider_id: p,
+                        model_id: adapter.default_model().to_string(),
+                        adapter,
+                        key,
+                    })
+                }
+            },
+            &health_hook,
+        )
         .await?;
 
         self.log_completion(&routed, &result).await;
@@ -237,11 +247,7 @@ impl Pipeline {
             .await
     }
 
-    async fn log_completion(
-        &self,
-        routed: &RoutingOutput,
-        result: &ExecutionResult,
-    ) {
+    async fn log_completion(&self, routed: &RoutingOutput, result: &ExecutionResult) {
         use crate::db::queries::{AttemptLog, RequestLog};
         let input_tokens = result.response.usage.input_tokens;
         let output_tokens = result.response.usage.output_tokens;
