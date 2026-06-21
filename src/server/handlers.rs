@@ -11,7 +11,6 @@ use axum::{
 use futures::StreamExt;
 use serde_json::{json, Value};
 
-use crate::proxy::pipeline::Pipeline;
 use crate::routing::scorer::{Scorer, ScoringContext};
 use crate::routing::specificity::detector_from_config;
 use crate::schema::inbound::parse_inbound;
@@ -273,7 +272,6 @@ pub async fn chat_completions(
     // touching the config (e.g. tenant-specific billing, ad-hoc
     // testing). The inbound Authorization header is still validated
     // by the auth middleware — this only swaps the UPSTREAM key.
-    let mut routed = routed;
     if let Some(override_key) = headers.get("x-router-key").and_then(|v| v.to_str().ok()) {
         if !override_key.is_empty() {
             tracing::info!(
@@ -382,7 +380,7 @@ pub async fn chat_completions(
             Err(e) => return e.into_response(),
         };
         let v = response_to_openai(&resp);
-        let mut resp = (StatusCode::OK, Json(v)).into_response();
+        let resp = (StatusCode::OK, Json(v)).into_response();
         attach_routing_headers(
             resp,
             &provider_id,

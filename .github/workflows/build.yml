@@ -15,12 +15,18 @@ env:
 jobs:
   fmt-clippy:
     name: fmt + clippy (strict)
+    # v0.2.0 plan item 7.1: fmt and clippy actually block
+    # the workflow. Use the same toolchain as the MSRV job
+    # so the lint surface matches what we promise to build
+    # with. (Bumped from @stable in rc2 because the latest
+    # stable started flagging pre-existing lints that the
+    # project's MSRV wouldn't have caught.)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.88
         with:
           components: rustfmt, clippy
 

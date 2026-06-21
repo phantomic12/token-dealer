@@ -262,7 +262,7 @@ fn message_to_openai(msg: &CanonicalMessage) -> Value {
                     let url = match data {
                         ImageData::Url { url } => url.clone(),
                         ImageData::Base64 { data } => {
-                            format!("data:{};base64,{}", media_type, data)
+                            format!("data:{media_type};base64,{data}")
                         }
                     };
                     Some(json!({"type": "image_url", "image_url": {"url": url}}))
@@ -399,7 +399,7 @@ fn parse_openai_usage(u: &Value) -> Usage {
     }
 }
 
-fn parse_openai_chunk(v: &Value, model_id: &str, provider_id: &str) -> Option<CanonicalChunk> {
+fn parse_openai_chunk(v: &Value, model_id: &str, _provider_id: &str) -> Option<CanonicalChunk> {
     let id = v
         .get("id")
         .and_then(|x| x.as_str())

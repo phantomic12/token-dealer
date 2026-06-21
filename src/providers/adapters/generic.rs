@@ -4,7 +4,6 @@
 
 use crate::error::AppResult;
 use crate::providers::adapter::{Capability, ProviderAdapter, ProviderStream};
-use crate::providers::adapters::openai::OpenAiAdapter;
 use crate::schema::canonical::{CanonicalRequest, CanonicalResponse};
 use async_stream::try_stream;
 use futures::StreamExt;

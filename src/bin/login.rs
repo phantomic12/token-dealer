@@ -190,6 +190,7 @@ fn lookup_provider(provider: &str) -> Option<ProviderOAuth> {
 }
 
 #[derive(Serialize)]
+#[allow(dead_code)] // Reserved for the (planned) `setup` subcommand.
 struct SetupReq {
     provider_id: String,
     refresh_token: String,
@@ -200,6 +201,7 @@ struct SetupReq {
 }
 
 #[derive(Deserialize)]
+#[allow(dead_code)] // Reserved for the (planned) `setup` subcommand.
 struct SetupResp {
     status: String,
     #[serde(default)]
@@ -308,7 +310,7 @@ fn run_anthropic_paste(server: &str, print_only: bool) -> anyhow::Result<()> {
     // PKCE: code_verifier doubles as state (Anthropic convention).
     let verifier = random_token(64);
     let challenge = pkce_s256(&verifier);
-    let mut url = format!(
+    let url = format!(
         "{}?code=true&client_id={}&response_type=code&redirect_uri={}&scope={}&state={}&code_challenge={}&code_challenge_method=S256",
         cfg.authorize_url,
         urlenc(cfg.client_id),
@@ -455,7 +457,7 @@ async fn run_popup_flow(
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let local_addr = listener.local_addr()?;
     let callback_url = format!("http://127.0.0.1:{}/callback", local_addr.port());
-    println!("Loopback callback bound to {}", callback_url);
+    println!("Loopback callback bound to {callback_url}");
 
     // PKCE
     let verifier = random_token(64);
@@ -512,7 +514,7 @@ async fn run_popup_flow(
         }
     });
 
-    println!("Waiting for browser callback on {}...", callback_url);
+    println!("Waiting for browser callback on {callback_url}...");
     let result = rx.await?;
     match result {
         CallbackResult::Ok { code, state: _ } => {
@@ -568,7 +570,14 @@ async fn run_popup_flow(
 }
 
 enum CallbackResult {
-    Ok { code: String, state: String },
+    #[allow(dead_code)] // `state` is kept for the future "validate
+    // callback state matches expected_state" use
+    // case; not currently consumed because the
+    // listener only opens one connection.
+    Ok {
+        code: String,
+        state: String,
+    },
     Error(String),
 }
 
@@ -586,7 +595,7 @@ async fn accept_callback(
         .split_once(' ')
         .ok_or_else(|| anyhow::anyhow!("bad request line"))?;
     let (_method, path) = path_query.split_once(' ').unwrap_or(("GET", path_query));
-    let url = format!("http://127.0.0.1{}", path);
+    let url = format!("http://127.0.0.1{path}");
     let parsed = url::Url::parse(&url)?;
     let mut code = String::new();
     let mut state = String::new();
@@ -718,7 +727,7 @@ fn urlenc(s: &str) -> String {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
                 out.push(b as char)
             }
-            _ => out.push_str(&format!("%{:02X}", b)),
+            _ => out.push_str(&format!("%{b:02X}")),
         }
     }
     out
@@ -771,14 +780,14 @@ impl ColorExt for str {
         if std::env::var("NO_COLOR").is_ok() {
             self.to_string()
         } else {
-            format!("\x1b[1;36m{}\x1b[0m", self)
+            format!("\x1b[1;36m{self}\x1b[0m")
         }
     }
     fn bright_yellow(&self) -> String {
         if std::env::var("NO_COLOR").is_ok() {
             self.to_string()
         } else {
-            format!("\x1b[1;33m{}\x1b[0m", self)
+            format!("\x1b[1;33m{self}\x1b[0m")
         }
     }
 }

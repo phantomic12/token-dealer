@@ -233,7 +233,7 @@ impl ProviderAdapter for AnthropicAdapter {
             }
 
             let model_id = req.selected_model.clone();
-            let provider_id = self.id.clone();
+            let _provider_id = self.id.clone();
             let message_id = format!("msg_{}", uuid::Uuid::new_v4());
 
             let byte_stream = resp.bytes_stream();

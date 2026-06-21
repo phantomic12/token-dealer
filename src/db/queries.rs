@@ -96,6 +96,7 @@ pub fn insert_request(conn: &Connection, log: &RequestLog) -> rusqlite::Result<(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn update_request_final(
     conn: &Connection,
     id: &str,
@@ -150,7 +151,7 @@ pub fn insert_attempt(conn: &Connection, attempt: &AttemptLog) -> rusqlite::Resu
 }
 
 pub fn list_requests(conn: &Connection, filter: &LogFilter) -> rusqlite::Result<Vec<RequestRow>> {
-    let limit = filter.limit.max(1).min(500) as i64;
+    let limit = filter.limit.clamp(1, 500) as i64;
     let mut sql = String::from(
         "SELECT id, created_at, tier, routed_model, routed_provider,
                 total_latency_ms, input_tokens, output_tokens, cost_usd,

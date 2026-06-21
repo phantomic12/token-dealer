@@ -17,7 +17,6 @@
 //! `td.output_tokens`, `td.cost_usd`, `td.request_id`.
 
 use opentelemetry::global;
-use opentelemetry::trace::TracerProvider as _;
 use opentelemetry::KeyValue;
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::trace::TracerProvider;

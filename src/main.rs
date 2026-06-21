@@ -110,6 +110,13 @@ async fn main() -> anyhow::Result<()> {
     let oauth = token_dealer::oauth::OAuthManager::new(db.clone(), key_store.clone(), http.clone());
     token_dealer::oauth::spawn_refresher(oauth.clone());
     let user_store = token_dealer::auth::UserStore::new(db.clone());
+    // v0.2.0 plan item 1: bootstrap the first admin when the
+    // user table is empty and auth is enabled. The password is
+    // printed ONCE with a banner so the user can log in; rotate
+    // via `POST /admin/auth/rotate-password` after first login.
+    if snapshot.auth.enabled {
+        bootstrap_admin_if_needed(&user_store).await?;
+    }
     let pricing = token_dealer::cost::PricingStore::new(db.clone());
     let _ = pricing.seed_defaults().await;
     // Spawn the OpenRouter pricing sync background task (daily by
@@ -355,9 +362,9 @@ fn run_check(arg_idx: usize) -> anyhow::Result<()> {
         std::process::exit(1);
     }
     if outcome.has_warnings() {
-        println!("{}: ok with warnings", path);
+        println!("{path}: ok with warnings");
         std::process::exit(2);
     }
-    println!("{}: ok", path);
+    println!("{path}: ok");
     Ok(())
 }

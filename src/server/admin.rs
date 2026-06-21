@@ -15,9 +15,7 @@ use axum::{
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::config::types::{
-    DetectionCondition, DetectionRule, ProviderConfig, ProviderType, TierConfig,
-};
+use crate::config::types::{DetectionCondition, DetectionRule, ProviderConfig, TierConfig};
 
 pub async fn add_provider(
     State(state): State<AppState>,
@@ -112,7 +110,7 @@ pub async fn update_tier(
     Path(tier): Path<String>,
     Json(body): Json<TierUpdate>,
 ) -> Response {
-    if !crate::schema::canonical::Tier::parse(&tier).is_some() {
+    if crate::schema::canonical::Tier::parse(&tier).is_none() {
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({"error": format!("unknown tier: {tier}")})),
@@ -274,7 +272,7 @@ pub async fn start_oauth(
             // GET: redirect the browser straight to the consent
             // page. POST: return the URL as JSON so JS can open it
             // in a popup.
-            let is_get = headers
+            let _is_get = headers
                 .get(axum::http::method::Method::GET.as_str())
                 .is_some()
                 || !headers
@@ -527,7 +525,7 @@ fn urlencoding_simple(s: &str) -> String {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
                 out.push(b as char);
             }
-            _ => out.push_str(&format!("%{:02X}", b)),
+            _ => out.push_str(&format!("%{b:02X}")),
         }
     }
     out

@@ -104,9 +104,7 @@ impl RateLimiter {
     pub fn try_acquire(&self, key: &str) -> Result<(), u64> {
         // Global first.
         let mut g = self.global.lock().expect("rate-limit mutex poisoned");
-        if let Err(secs) = g.try_consume(self.global_rps, self.global_burst) {
-            return Err(secs);
-        }
+        g.try_consume(self.global_rps, self.global_burst)?;
         drop(g);
         // Per-key.
         let mut map = self.per_key.lock().expect("rate-limit mutex poisoned");

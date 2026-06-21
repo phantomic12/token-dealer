@@ -246,7 +246,7 @@ where
         attempts.push(AttemptRecord {
             provider: handle.provider_id.clone(),
             model: handle.model_id.clone(),
-            outcome: outcome.clone(),
+            outcome,
             latency_ms: first_latency,
         });
 
@@ -294,7 +294,7 @@ where
             attempts.push(AttemptRecord {
                 provider: handle.provider_id.clone(),
                 model: handle.model_id.clone(),
-                outcome: retry_outcome.clone(),
+                outcome: retry_outcome,
                 latency_ms: retry_latency,
             });
             if let Ok(resp) = retry {

@@ -19,7 +19,6 @@ use token_dealer::{
     AppState,
 };
 use tower::ServiceExt;
-use uuid::Uuid;
 use wiremock::{
     matchers::{header, header_exists, method, path},
     Mock, MockServer, ResponseTemplate,
@@ -53,7 +52,7 @@ async fn make_state(mock_base: &str) -> AppState {
     );
     // Serialize → load via ConfigService so we exercise the same path.
     let toml = toml::to_string(&cfg).unwrap();
-    let dir = tempfile_or_stdout();
+    tempfile_or_stdout();
     let tmp = std::env::temp_dir().join(format!("token-dealer-test-{}.toml", uuid::Uuid::new_v4()));
     std::fs::write(&tmp, toml).unwrap();
     let svc = ConfigService::load(&tmp).await.unwrap();
@@ -84,7 +83,6 @@ async fn make_state(mock_base: &str) -> AppState {
         user_store.clone(),
         pricing.clone(),
     );
-    let _ = dir;
     let metadata = token_dealer::metadata::MetadataStore::new();
     let user_store = token_dealer::auth::UserStore::new(db.clone());
     let pricing = token_dealer::cost::PricingStore::new(db.clone());
@@ -105,7 +103,7 @@ async fn make_state(mock_base: &str) -> AppState {
     )
 }
 
-fn tempfile_or_stdout() -> () {
+fn tempfile_or_stdout() {
     // placeholder so we can return () in async fn
 }
 
@@ -705,8 +703,6 @@ async fn auth_rejects_request_with_wrong_key() {
 async fn circuit_breaker_skips_provider_in_cooldown() {
     use token_dealer::providers::HealthRegistry;
     use token_dealer::proxy::fallback::{self, HealthHook, ProviderHandle, RoutingPlan};
-    use token_dealer::schema::canonical::{CanonicalRequest, Tier};
-    use uuid::Uuid;
 
     let registry = HealthRegistry::new();
     // Mark "down" as down with an active cooldown
@@ -1092,7 +1088,7 @@ async fn specificity_routing_overrides_tier_when_keywords_match() {
             enabled: true,
             rules: vec![SpecificityRule {
                 category: SpecificityCategory::Coding,
-                primary: format!("specific/spec-model"),
+                primary: "specific/spec-model".to_string(),
                 threshold: None,
             }],
         },

@@ -14,7 +14,7 @@ use super::super::schema::inbound::{InboundRequest, PreRouting};
 use super::fallback::{self, ExecutionResult, ProviderHandle, RoutingPlan};
 use crate::routing::selector::{SelectedRoute, Selector};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use uuid::Uuid;
 
 #[derive(Clone)]
@@ -47,6 +47,7 @@ pub struct RoutingOutput {
 }
 
 impl Pipeline {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         registry: Arc<ProviderRegistry>,
         config: ConfigService,

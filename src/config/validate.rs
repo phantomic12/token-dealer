@@ -123,7 +123,7 @@ pub fn validate(raw: &str) -> ValidationOutcome {
     // Pass 5: deprecation list. Static, hand-maintained. If a
     // field appears in the raw TOML AND in the deprecated set,
     // emit a warning with a migration hint.
-    collect_deprecations(&raw, &mut out);
+    collect_deprecations(raw, &mut out);
 
     out
 }

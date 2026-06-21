@@ -19,9 +19,7 @@
 //!    configured primary in `[specificity.<category>]`, route to it.
 //! 6. Otherwise, fall through to the tier scorer.
 
-use super::super::config::types::{
-    RouterConfig, SpecificityCategory, SpecificityConfig, SpecificityRule,
-};
+use super::super::config::types::{RouterConfig, SpecificityCategory, SpecificityConfig};
 use super::super::schema::inbound::InboundRequest;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -445,7 +443,7 @@ impl SpecificityDetector {
                         score: u32::MAX,
                         threshold: 0,
                         primary: Some(primary.to_string()),
-                        reason: format!("header override (x-router-specificity={})", h),
+                        reason: format!("header override (x-router-specificity={h})"),
                     });
                 }
             }
@@ -511,7 +509,7 @@ impl SpecificityDetector {
                 continue;
             }
             match best {
-                Some((_, bs, bt)) if *score < bs => {}
+                Some((_, bs, _bt)) if *score < bs => {}
                 Some((_, bs, bt)) if *score == bs && threshold <= bt => {}
                 _ => best = Some((*cat, *score, threshold)),
             }
@@ -596,6 +594,7 @@ impl SpecificityConfigExt for SpecificityConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::types::SpecificityRule;
     use crate::schema::inbound::{InboundMessage, InboundRequest, InboundTool, InboundToolDef};
 
     fn make_req(text: &str) -> InboundRequest {

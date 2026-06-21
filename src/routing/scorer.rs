@@ -10,7 +10,7 @@
 //! The scorer is async because tier 2 + tier 3 inspect the registry.
 
 use super::super::config::ConfigService;
-use super::super::schema::canonical::{CanonicalRequest, Tier};
+use super::super::schema::canonical::Tier;
 use super::super::schema::inbound::InboundRequest;
 
 const HIGH_CONTEXT_TOKENS: u32 = 50_000;
@@ -79,13 +79,11 @@ impl Scorer {
             }
         }
         // `provider/model` (no tier prefix) — set override only
-        if parts.len() == 2 {
-            if resolve_alias_lite(parts[0]).is_some() {
-                return ScoreResult {
-                    tier: Tier::Standard, // best-guess; selector validates
-                    model_override: Some(ctx.inbound.model.clone()),
-                };
-            }
+        if parts.len() == 2 && resolve_alias_lite(parts[0]).is_some() {
+            return ScoreResult {
+                tier: Tier::Standard, // best-guess; selector validates
+                model_override: Some(ctx.inbound.model.clone()),
+            };
         }
 
         // 3 + 4. Heuristics + user rules
@@ -129,7 +127,7 @@ impl Scorer {
         for rule in &cfg.detection.rules {
             if rule_matches(
                 &rule.condition,
-                &ctx.inbound,
+                ctx.inbound,
                 approx_tokens,
                 tools_present,
                 has_image,

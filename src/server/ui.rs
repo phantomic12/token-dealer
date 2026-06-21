@@ -3,11 +3,10 @@
 //! toolchain, no separate static directory. Everything is generated
 //! from Rust + an embedded stylesheet. HTMX loads from a CDN.
 
-use super::auth as mw;
 use super::AppState;
 use axum::{
     extract::{Path, State},
-    http::{header, StatusCode},
+    http::StatusCode,
     response::{Html, IntoResponse, Response},
 };
 use serde::Deserialize;
@@ -413,7 +412,7 @@ pub async fn playground_send(
     headers: axum::http::HeaderMap,
     axum::Form(form): axum::Form<PlaygroundForm>,
 ) -> Response {
-    use crate::schema::canonical::{ContentBlock, Role};
+    use crate::schema::canonical::ContentBlock;
     use crate::schema::inbound::{InboundMessage, InboundRequest};
 
     // Build an inbound request from the form. System prompt is
@@ -597,7 +596,7 @@ pub async fn oauth_done_page(
     let title = if status == "ok" {
         format!("Connected {provider}")
     } else {
-        format!("Connection failed")
+        "Connection failed".to_string()
     };
     let body = format!(
         r##"<!doctype html>
@@ -667,7 +666,7 @@ pub async fn oauth_done_page(
         },
         status_icon = if status == "ok" { "✓" } else { "✕" },
         body_msg = if status == "ok" {
-            format!("Refresh token stored. You can close this window.")
+            "Refresh token stored. You can close this window.".to_string()
         } else {
             format!("Could not complete the {provider} sign-in.")
         },
@@ -794,9 +793,7 @@ fn render_wizard_step1() -> String {
         };
         let _ = write!(
             body,
-            r##"<div class="group" data-group="{gk}"><h3>{title}</h3>"##,
-            gk = group_key,
-            title = group_title
+            r##"<div class="group" data-group="{group_key}"><h3>{group_title}</h3>"##
         );
         for (display, type_str, _) in entries {
             let info = crate::providers::manifest::ALL_TYPES
@@ -812,15 +809,11 @@ fn render_wizard_step1() -> String {
                         // Differentiate device-code vs popup_oauth
                         let is_device = !m.oauth.as_ref().unwrap().device_code_url.is_empty();
                         if is_device {
-                            ("device", "oauth", format!("{} · device code", base))
+                            ("device", "oauth", format!("{base} · device code"))
                         } else if m.oauth.as_ref().unwrap().authorize_url.is_empty() {
-                            (
-                                "refresh",
-                                "oauth",
-                                format!("{} · paste refresh token", base),
-                            )
+                            ("refresh", "oauth", format!("{base} · paste refresh token"))
                         } else {
-                            ("oauth", "oauth", format!("{} · popup", base))
+                            ("oauth", "oauth", format!("{base} · popup"))
                         }
                     } else if m.subscription.is_some() {
                         let sub = m.subscription.unwrap();
@@ -844,7 +837,7 @@ fn render_wizard_step1() -> String {
                           <span class="meta">{meta}</span>
                         </a>"##,
                 group_cls = badge_class,
-                search_blob = format!("{} {} {}", display.to_lowercase(), type_str, badge),
+                search_blob = format_args!("{} {} {}", display.to_lowercase(), type_str, badge),
                 t = type_str,
                 display = display,
                 badge = badge,
@@ -996,21 +989,21 @@ fn render_wizard_step2(provider_type: &str) -> String {
     // Build the OAuth Connect button.
     let oauth_connect_html = if is_popup_oauth {
         format!(
-            r##"<div class="oauth-connect" id="oauth-{t}-block">
-              <button type="button" class="secondary" id="oauth-{t}-btn">
-                Connect with {t}
+            r##"<div class="oauth-connect" id="oauth-{provider_type}-block">
+              <button type="button" class="secondary" id="oauth-{provider_type}-btn">
+                Connect with {provider_type}
               </button>
-              <span class="muted">Opens the {t} sign-in page in a popup window. Token stored automatically after consent.</span>
+              <span class="muted">Opens the {provider_type} sign-in page in a popup window. Token stored automatically after consent.</span>
             </div>
             <script>
             (function() {{
-              const btn = document.getElementById('oauth-{t}-btn');
+              const btn = document.getElementById('oauth-{provider_type}-btn');
               if (!btn) return;
               btn.addEventListener('click', () => {{
                 btn.disabled = true;
-                btn.textContent = 'Opening {t}…';
-                const redirect_uri = window.location.origin + '/admin/oauth/{t}/callback';
-                fetch('/admin/oauth/{t}/start', {{
+                btn.textContent = 'Opening {provider_type}…';
+                const redirect_uri = window.location.origin + '/admin/oauth/{provider_type}/callback';
+                fetch('/admin/oauth/{provider_type}/start', {{
                   method: 'POST',
                   headers: {{ 'content-type': 'application/json' }},
                   body: JSON.stringify({{ redirect_uri }}),
@@ -1019,7 +1012,7 @@ fn render_wizard_step2(provider_type: &str) -> String {
                 .then(({{ ok, body }}) => {{
                   if (!ok || !body.authorize_url) {{
                     btn.disabled = false;
-                    btn.textContent = 'Connect with {t}';
+                    btn.textContent = 'Connect with {provider_type}';
                     alert('OAuth start failed: ' + (body.error || 'unknown'));
                     return;
                   }}
@@ -1029,16 +1022,16 @@ fn render_wizard_step2(provider_type: &str) -> String {
                   );
                   if (!popup) {{
                     btn.disabled = false;
-                    btn.textContent = 'Connect with {t}';
+                    btn.textContent = 'Connect with {provider_type}';
                     alert('Tab blocked — please allow popups for this origin, then click again.');
                     return;
                   }}
                   // Listen for the success postMessage from the popup tab.
                   window.addEventListener('message', (e) => {{
-                    if (e.data && e.data.type === 'oauth_complete' && e.data.provider === '{t}') {{
+                    if (e.data && e.data.type === 'oauth_complete' && e.data.provider === '{provider_type}') {{
                       window.location.href = '/ui/providers?flash=' +
                         (e.data.status === 'ok' ? 'oauth_ok' : 'oauth_err') +
-                        '&provider={t}';
+                        '&provider={provider_type}';
                     }}
                   }});
                   // Detect when the tab is closed without completing.
@@ -1046,27 +1039,25 @@ fn render_wizard_step2(provider_type: &str) -> String {
                     if (popup.closed) {{
                       clearInterval(tk);
                       btn.disabled = false;
-                      btn.textContent = 'Connect with {t}';
+                      btn.textContent = 'Connect with {provider_type}';
                     }}
                   }}, 800);
                 }});
               }});
             }})();
             </script>"##,
-            t = provider_type,
         )
     } else if is_device_code {
         format!(
-            r##"<div class="oauth-connect" id="oauth-{t}-block">
+            r##"<div class="oauth-connect" id="oauth-{provider_type}-block">
               <button type="button" class="secondary"
-                      hx-post="/admin/oauth/{t}/device/start"
-                      hx-target="#oauth-{t}-block"
+                      hx-post="/admin/oauth/{provider_type}/device/start"
+                      hx-target="#oauth-{provider_type}-block"
                       hx-swap="outerHTML">
-                Connect with {t} (device code)
+                Connect with {provider_type} (device code)
               </button>
               <span class="muted">Returns a code you enter at the provider's activation page. Auto-connects once approved.</span>
             </div>"##,
-            t = provider_type,
         )
     } else if is_anthropic_paste {
         // Anthropic's claude.ai/oauth/authorize → console.anthropic.com/oauth/code/callback
@@ -1083,20 +1074,20 @@ fn render_wizard_step2(provider_type: &str) -> String {
             })
             .unwrap_or("https://console.anthropic.com/oauth/code/callback");
         format!(
-            r##"<div class="oauth-connect" id="oauth-{t}-block">
-              <a class="secondary" href="{redirect}" target="_blank" rel="noopener" id="oauth-{t}-open">Open Claude sign-in</a>
+            r##"<div class="oauth-connect" id="oauth-{provider_type}-block">
+              <a class="secondary" href="{paste_redirect}" target="_blank" rel="noopener" id="oauth-{provider_type}-open">Open Claude sign-in</a>
               <span class="muted">Sign in, then copy the <code>&lt;code&gt;#&lt;state&gt;</code> string from the redirect page.</span>
-              <textarea id="oauth-{t}-code" placeholder="paste the code here (e.g. sk-ant-oat01-...#a1b2c3)" rows="3" style="width:100%;margin-top:8px;font-family:var(--mono);font-size:12px;"></textarea>
-              <button type="button" class="secondary" id="oauth-{t}-submit">Submit code</button>
+              <textarea id="oauth-{provider_type}-code" placeholder="paste the code here (e.g. sk-ant-oat01-...#a1b2c3)" rows="3" style="width:100%;margin-top:8px;font-family:var(--mono);font-size:12px;"></textarea>
+              <button type="button" class="secondary" id="oauth-{provider_type}-submit">Submit code</button>
             </div>
             <script>
             (function() {{
-              const btn = document.getElementById('oauth-{t}-submit');
+              const btn = document.getElementById('oauth-{provider_type}-submit');
               if (!btn) return;
               btn.addEventListener('click', async () => {{
                 btn.disabled = true;
                 btn.textContent = 'Submitting…';
-                const code = (document.getElementById('oauth-{t}-code').value || '').trim();
+                const code = (document.getElementById('oauth-{provider_type}-code').value || '').trim();
                 if (!code) {{
                   btn.disabled = false;
                   btn.textContent = 'Submit code';
@@ -1104,7 +1095,7 @@ fn render_wizard_step2(provider_type: &str) -> String {
                   return;
                 }}
                 try {{
-                  const r = await fetch('/admin/oauth/{t}/paste', {{
+                  const r = await fetch('/admin/oauth/{provider_type}/paste', {{
                     method: 'POST',
                     headers: {{ 'content-type': 'application/json' }},
                     body: JSON.stringify({{ code }}),
@@ -1116,7 +1107,7 @@ fn render_wizard_step2(provider_type: &str) -> String {
                     alert('Submit failed: ' + (j.error || r.statusText));
                     return;
                   }}
-                  window.location.href = '/ui/providers?flash=oauth_ok&provider={t}';
+                  window.location.href = '/ui/providers?flash=oauth_ok&provider={provider_type}';
                 }} catch (e) {{
                   btn.disabled = false;
                   btn.textContent = 'Submit code';
@@ -1125,23 +1116,20 @@ fn render_wizard_step2(provider_type: &str) -> String {
               }});
             }})();
             </script>"##,
-            t = provider_type,
-            redirect = paste_redirect,
         )
     } else if oauth.is_some() {
         // OAuth with refresh_token-paste only (no popup, no device).
         format!(
-            r##"<div class="oauth-connect" id="oauth-{t}-block">
+            r##"<div class="oauth-connect" id="oauth-{provider_type}-block">
               <button type="button" class="secondary"
-                      hx-post="/admin/oauth/{t}/refresh"
+                      hx-post="/admin/oauth/{provider_type}/refresh"
                       hx-vals='{{"key": ""}}'
-                      hx-target="#oauth-{t}-block"
+                      hx-target="#oauth-{provider_type}-block"
                       hx-swap="outerHTML">
                 Refresh token mode
               </button>
               <span class="muted">Paste your refresh token below — the system exchanges it for an access token on every request.</span>
             </div>"##,
-            t = provider_type,
         )
     } else {
         String::new()
@@ -1378,8 +1366,7 @@ pub async fn ui_remove_provider(State(state): State<AppState>, Path(id): Path<St
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Html(format!(
-                r##"<div class="flash error">save failed: {}</div>"##,
-                e
+                r##"<div class="flash error">save failed: {e}</div>"##
             )),
         )
             .into_response(),
@@ -1527,7 +1514,7 @@ pub async fn logs_page(State(state): State<AppState>) -> Response {
             return Html(layout(
                 "logs",
                 "Logs",
-                &format!(r#"<div class="flash error">DB error: {}</div>"#, e),
+                &format!(r#"<div class="flash error">DB error: {e}</div>"#),
                 None,
             ))
             .into_response();
@@ -1556,7 +1543,7 @@ fn render_logs_rows(rows: &[crate::db::queries::RequestRow]) -> String {
     for r in rows {
         let cost = r
             .cost_usd
-            .map(|c| format!("${:.5}", c))
+            .map(|c| format!("${c:.5}"))
             .unwrap_or_else(|| "—".to_string());
         let _ = write!(
             out,

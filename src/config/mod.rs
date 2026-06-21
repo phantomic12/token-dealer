@@ -10,5 +10,3 @@ pub use types::{
     SpecificityConfig, SpecificityRule, StreamingConfig, TierConfig, TierTimeouts, TierTimeoutsSet,
 };
 pub use validate::{validate as validate_config, ConfigError, ConfigWarning, ValidationOutcome};
-
-use crate::auth::resolve as resolve_key;

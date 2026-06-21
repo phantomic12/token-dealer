@@ -1,8 +1,10 @@
 //! OpenAI Responses API adapter (/v1/responses).
 //! Used for Codex, o1-pro, and deep-research models that reject
 //! /v1/chat/completions. Different shape:
-//!   - request: `{input: [...], model, instructions, ...}` (no `messages`)
-//!   - streaming: emits `response.*` events instead of `chat.completion.chunk`
+//!
+//! - request: `{input: [...], model, instructions, ...}` (no `messages`)
+//! - streaming: emits `response.*` events instead of `chat.completion.chunk`
+//!
 //! We translate to/from the OpenAI chat-completions shape at the boundary
 //! so the rest of the router doesn't need to know.
 

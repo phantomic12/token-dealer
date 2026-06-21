@@ -254,7 +254,7 @@ enabled = true
             let mut g = self.inner.write().await;
             let mut next = g.clone();
             f(&mut next);
-            let prev = g.clone();
+            let _prev = g.clone();
             *g = next.clone();
             next
         };

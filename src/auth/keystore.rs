@@ -389,6 +389,17 @@ fn _err() -> AppError {
 mod tests {
     use super::*;
 
+    /// Serialize the env-mutating tests so they don't race on
+    /// the process-global `ROUTER_MASTER_KEY` (and friends).
+    /// The mutating tests need to read + write + read the same
+    /// env var, and the rust test harness runs them in parallel
+    /// by default. A static mutex is enough; the critical
+    /// sections are short.
+    fn env_lock() -> &'static std::sync::Mutex<()> {
+        static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+        LOCK.get_or_init(|| std::sync::Mutex::new(()))
+    }
+
     fn make_master() -> MasterKey {
         // 32 raw bytes — never use a hardcoded key in production.
         let bytes: [u8; KEY_LEN] = std::array::from_fn(|i| i as u8);
@@ -454,6 +465,7 @@ mod tests {
 
     #[test]
     fn from_env_strict_refuses_when_missing() {
+        let _guard = env_lock().lock().unwrap();
         // Make sure neither env var is set during the test.
         // SAFETY: tests in this module are #[test] and run in
         // parallel within the same process; the env var we set
@@ -487,6 +499,7 @@ mod tests {
 
     #[test]
     fn from_env_strict_accepts_hex() {
+        let _guard = env_lock().lock().unwrap();
         let bytes = [0x42u8; KEY_LEN];
         let hex = hex::encode(bytes);
         let saved = std::env::var("ROUTER_MASTER_KEY").ok();
@@ -508,6 +521,7 @@ mod tests {
 
     #[test]
     fn from_env_strict_accepts_base64() {
+        let _guard = env_lock().lock().unwrap();
         let bytes = [0xA5u8; KEY_LEN];
         let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
         let saved = std::env::var("ROUTER_MASTER_KEY").ok();

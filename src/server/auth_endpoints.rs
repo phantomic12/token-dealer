@@ -4,10 +4,7 @@
 //! clients (Bearer API key). The login form on /ui/login accepts
 //! either an API key OR email+password.
 
-use crate::auth::{
-    generate_session_token, hash_password, sha256_hex, verify_password, ApiKey, Role, User,
-    UserContext, UserStore,
-};
+use crate::auth::{verify_password, Role, User, UserContext};
 use crate::server::auth as mw;
 use crate::server::AppState;
 use axum::extract::State;

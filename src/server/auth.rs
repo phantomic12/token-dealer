@@ -213,7 +213,7 @@ fn urlencoding_minimal(s: &str) -> String {
                 let mut buf = [0u8; 4];
                 let bytes = c.encode_utf8(&mut buf);
                 for b in bytes.bytes() {
-                    out.push_str(&format!("%{:02X}", b));
+                    out.push_str(&format!("%{b:02X}"));
                 }
             }
         }
@@ -305,35 +305,6 @@ fn unauthorized(msg: &str) -> Response {
         .into_response()
 }
 
-#[cfg(test)]
-mod ui_auth_tests {
-    use super::*;
-
-    #[test]
-    fn url_encoding_handles_safe_chars() {
-        // Reserved-but-safe chars survive unescaped.
-        let out = urlencoding_minimal("/ui/providers?foo=bar&baz=1");
-        assert_eq!(out, "/ui/providers?foo=bar&baz=1");
-    }
-
-    #[test]
-    fn url_encoding_escapes_unsafe_chars() {
-        // Spaces, quotes, etc. become %XX.
-        let out = urlencoding_minimal("/ui/x y");
-        assert_eq!(out, "/ui/x%20y");
-        let out = urlencoding_minimal("/ui/a\"b");
-        assert_eq!(out, "/ui/a%22b");
-    }
-
-    #[test]
-    fn url_encoding_handles_unicode() {
-        // Multi-byte UTF-8 encoded byte-by-byte.
-        let out = urlencoding_minimal("/ui/café");
-        // "café" → c, a, f, %C3, %A9
-        assert_eq!(out, "/ui/caf%C3%A9");
-    }
-}
-
 fn keys_from_config(cfg: &crate::config::types::AuthConfig) -> Vec<String> {
     let mut out = Vec::new();
     // Legacy single admin key.
@@ -377,4 +348,33 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
         diff |= x ^ y;
     }
     diff == 0
+}
+
+#[cfg(test)]
+mod ui_auth_tests {
+    use super::*;
+
+    #[test]
+    fn url_encoding_handles_safe_chars() {
+        // Reserved-but-safe chars survive unescaped.
+        let out = urlencoding_minimal("/ui/providers?foo=bar&baz=1");
+        assert_eq!(out, "/ui/providers?foo=bar&baz=1");
+    }
+
+    #[test]
+    fn url_encoding_escapes_unsafe_chars() {
+        // Spaces, quotes, etc. become %XX.
+        let out = urlencoding_minimal("/ui/x y");
+        assert_eq!(out, "/ui/x%20y");
+        let out = urlencoding_minimal("/ui/a\"b");
+        assert_eq!(out, "/ui/a%22b");
+    }
+
+    #[test]
+    fn url_encoding_handles_unicode() {
+        // Multi-byte UTF-8 encoded byte-by-byte.
+        let out = urlencoding_minimal("/ui/café");
+        // "café" → c, a, f, %C3, %A9
+        assert_eq!(out, "/ui/caf%C3%A9");
+    }
 }

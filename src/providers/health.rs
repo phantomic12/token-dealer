@@ -72,12 +72,10 @@ impl HealthRegistry {
 
     pub async fn is_available(&self, provider_id: &str) -> bool {
         let g = self.inner.read().await;
-        match g.get(provider_id) {
-            None => true,
-            Some(h) => match h.cooldown_until {
-                Some(until) if until > std::time::Instant::now() => false,
-                _ => true,
-            },
-        }
+        let h = match g.get(provider_id) {
+            None => return true,
+            Some(h) => h,
+        };
+        !matches!(h.cooldown_until, Some(until) if until > std::time::Instant::now())
     }
 }

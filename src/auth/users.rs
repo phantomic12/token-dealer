@@ -588,7 +588,7 @@ impl UserStore {
                      FROM token_usage WHERE user_id = ? AND day >= date('now', ?)
                      ORDER BY day ASC",
                 )?;
-                let since = format!("-{} days", days);
+                let since = format!("-{days} days");
                 let rows = stmt
                     .query_map(rusqlite::params![user_id, since], |row| {
                         let day: String = row.get(0)?;

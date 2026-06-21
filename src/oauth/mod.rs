@@ -12,7 +12,6 @@
 use crate::auth::KeyStore;
 use crate::db::Db;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -344,22 +343,14 @@ impl OAuthManager {
         redirect_uri: &str,
     ) -> anyhow::Result<(String, String)> {
         let cfg = lookup_manifest_oauth(provider_id).ok_or_else(|| {
-            anyhow::anyhow!(
-                "provider {} has no OAuth config or is not popup_oauth",
-                provider_id
-            )
+            anyhow::anyhow!("provider {provider_id} has no OAuth config or is not popup_oauth")
         })?;
         if cfg.authorize_url.is_empty() {
-            anyhow::bail!(
-                "provider {} is not popup_oauth (no authorize_url)",
-                provider_id
-            );
+            anyhow::bail!("provider {provider_id} is not popup_oauth (no authorize_url)");
         }
         if cfg.is_anthropic_paste_code {
             anyhow::bail!(
-                "provider {} uses the paste-code flow (POST /admin/oauth/{}/paste) not popup",
-                provider_id,
-                provider_id
+                "provider {provider_id} uses the paste-code flow (POST /admin/oauth/{provider_id}/paste) not popup"
             );
         }
         let state = format!("{}.{}", provider_id, uuid::Uuid::new_v4().simple());
@@ -386,7 +377,7 @@ impl OAuthManager {
         let mut url = format!(
             "{}?response_type=code&client_id={}&redirect_uri={}&state={}&scope={}",
             cfg.authorize_url,
-            urlencoding(&cfg.client_id),
+            urlencoding(cfg.client_id),
             urlencoding(&effective_redirect),
             urlencoding(&state),
             urlencoding(&scope),
@@ -436,7 +427,7 @@ impl OAuthManager {
         }
 
         let cfg = lookup_manifest_oauth(provider_id)
-            .ok_or_else(|| anyhow::anyhow!("provider {} has no OAuth config", provider_id))?;
+            .ok_or_else(|| anyhow::anyhow!("provider {provider_id} has no OAuth config"))?;
 
         // Look up the PKCE verifier we stored at authorize time and
         // remove it. If missing, this provider either didn't issue
@@ -504,9 +495,9 @@ impl OAuthManager {
     /// (used by the client to poll).
     pub async fn start_device_flow(&self, provider_id: &str) -> anyhow::Result<DeviceFlowInfo> {
         let cfg = lookup_manifest_oauth(provider_id)
-            .ok_or_else(|| anyhow::anyhow!("provider {} has no OAuth config", provider_id))?;
+            .ok_or_else(|| anyhow::anyhow!("provider {provider_id} has no OAuth config"))?;
         if cfg.device_code_url.is_empty() {
-            anyhow::bail!("provider {} is not device_code", provider_id);
+            anyhow::bail!("provider {provider_id} is not device_code");
         }
         let scope = if cfg.scope.is_empty() {
             "openid profile email offline_access".to_string()
@@ -542,7 +533,7 @@ impl OAuthManager {
             // anything else with `invalid_client_metadata`. AWS SSO
             // OIDC accepts JSON bodies; manifest's Kiro service
             // confirms this works on the same endpoint.
-            let mut body = serde_json::json!({
+            let body = serde_json::json!({
                 "clientName": "Manifest",
                 "clientType": "public",
                 "scopes": scope.split_whitespace().collect::<Vec<_>>(),
@@ -555,7 +546,7 @@ impl OAuthManager {
             // server rejects with `invalid_request`, fall back to a
             // form-urlencoded shape — some AWS SSO regions accept
             // either.
-            let mut reg_resp = self
+            let reg_resp = self
                 .http
                 .post(&register_url)
                 .header("content-type", "application/json")
@@ -800,7 +791,7 @@ impl OAuthManager {
             None => anyhow::bail!("device_code not found (expired or never issued)"),
         };
         let cfg = lookup_manifest_oauth(&provider_id)
-            .ok_or_else(|| anyhow::anyhow!("provider {} has no OAuth config", provider_id))?;
+            .ok_or_else(|| anyhow::anyhow!("provider {provider_id} has no OAuth config"))?;
 
         // Kiro (and any other AWS-SSO-OIDC-backed provider) needs the
         // dynamically-registered client_id + client_secret on the
@@ -929,7 +920,7 @@ impl OAuthManager {
             "expired_token" | "access_denied" => {
                 self.devices.write().await.remove(device_code);
                 self.device_clients.write().await.remove(device_code);
-                anyhow::bail!("device_code rejected: {}", err);
+                anyhow::bail!("device_code rejected: {err}");
             }
             _ => anyhow::bail!(
                 "device_code poll failed: {} {}: {}",
@@ -991,7 +982,7 @@ fn urlencoding(s: &str) -> String {
                 out.push(b as char);
             }
             _ => {
-                out.push_str(&format!("%{:02X}", b));
+                out.push_str(&format!("%{b:02X}"));
             }
         }
     }
@@ -1064,7 +1055,7 @@ fn pkce_challenge_s256(verifier: &str) -> String {
 /// Lower-case base64url encoding without padding (RFC 4648 §5).
 fn base64_url_encode(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-    let mut out = String::with_capacity((bytes.len() * 4 + 2) / 3);
+    let mut out = String::with_capacity((bytes.len() * 4).div_ceil(3));
     let mut i = 0;
     while i + 3 <= bytes.len() {
         let b0 = bytes[i];
@@ -1110,12 +1101,9 @@ impl OAuthManager {
         pasted: &str,
     ) -> anyhow::Result<String> {
         let cfg = lookup_manifest_oauth(provider_id)
-            .ok_or_else(|| anyhow::anyhow!("provider {} has no OAuth config", provider_id))?;
+            .ok_or_else(|| anyhow::anyhow!("provider {provider_id} has no OAuth config"))?;
         if !cfg.is_anthropic_paste_code {
-            anyhow::bail!(
-                "provider {} does not support the paste-code flow",
-                provider_id
-            );
+            anyhow::bail!("provider {provider_id} does not support the paste-code flow");
         }
         let trimmed = pasted.trim();
         // Anthropic's redirect page renders `<code>#<state>` where
@@ -1257,7 +1245,7 @@ mod popup_url_tests {
         let mut url = format!(
             "{}?response_type=code&client_id={}&redirect_uri={}&state={}&scope={}",
             cfg.authorize_url,
-            urlencoding(&cfg.client_id),
+            urlencoding(cfg.client_id),
             urlencoding(&effective_redirect),
             urlencoding(state),
             urlencoding(&scope),
