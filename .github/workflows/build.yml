@@ -41,18 +41,24 @@ jobs:
         run: cargo clippy --all-targets --locked -- -D warnings
 
   msrv:
-    name: MSRV check (1.75, non-blocking)
-    # Per v0.2.0 plan item 7.5: separate MSRV job so accidental MSRV
-    # breaks surface before they hit the stable job. Non-blocking
-    # so a transient MSRV break doesn't stop the entire pipeline;
-    # failures show up as a red ❌ on the PR and a check on the commit.
+    name: MSRV check (1.88, non-blocking)
+    # Per v0.2.0 plan item 7.5: separate MSRV job so accidental
+    # MSRV breaks surface before they hit the stable job.
+    # Non-blocking so a transient MSRV break doesn't stop the
+    # entire pipeline; failures show up as a red ❌ on the PR
+    # and a check on the commit. Bumped from 1.75 to 1.88 in
+    # v0.2.0-rc2 because:
+    #   - hashbrown v0.17.1 (transitive) requires Cargo's
+    #     edition2024 feature, stabilized in Rust 1.85.0.
+    #   - wiremock v0.6.x (dev-dep) uses let-chains, stabilized
+    #     in Rust 1.88.0.
     continue-on-error: true
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust 1.75 (project MSRV)
-        uses: dtolnay/rust-toolchain@1.75
+      - name: Install Rust 1.88 (project MSRV)
+        uses: dtolnay/rust-toolchain@1.88
 
       - name: Cache cargo registry & target
         uses: Swatinem/rust-cache@v2

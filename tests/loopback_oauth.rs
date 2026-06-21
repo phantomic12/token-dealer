@@ -78,7 +78,10 @@ fn print_url_xai_uses_localhost_1455() {
         .output()
         .expect("token-dealer-login binary should be built");
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("auth.x.ai/oauth2/authorize"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("auth.x.ai/oauth2/authorize"),
+        "stdout: {stdout}"
+    );
     // xAI uses 127.0.0.1:1455/callback per its registered client.
     // The loopback flow uses the actual random port instead of the
     // pre-registered 1455 — we override the URL with the same

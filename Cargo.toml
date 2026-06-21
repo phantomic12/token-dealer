@@ -2,7 +2,17 @@
 name = "token-dealer"
 version = "0.2.0-rc2"
 edition = "2021"
-rust-version = "1.75"
+# MSRV is the minimum version we promise to build with.
+# Bumped from 1.75 to 1.88 in v0.2.0-rc2:
+#   - hashbrown v0.17.1 (transitive) requires Cargo's
+#     edition2024 feature, stabilized in Rust 1.85.0.
+#   - wiremock v0.6.x (dev-dep used by integration tests)
+#     uses `let Some(x) = ... && ...` let-chains, stabilized
+#     in Rust 1.88.0.
+# The MSRV job in CI runs `cargo +1.88 check` and the stable
+# job runs the toolchain pinned by
+# `dtolnay/rust-toolchain@stable`.
+rust-version = "1.88"
 description = "High-performance LLM routing proxy in Rust. OpenAI-compatible, multi-provider, tier-based routing."
 license = "MIT"
 repository = "https://github.com/phantomic12/token-dealer"
