@@ -146,6 +146,18 @@ pub async fn middleware(State(state): State<AppState>, mut req: Request, next: N
     if path.starts_with("/v1/") && req.method() != axum::http::Method::OPTIONS {
         return unauthorized("invalid or missing API key");
     }
+    // v0.2.0 plan item 1 (the previously-deferred piece):
+    // when `[auth] enabled = true`, /ui/* and /admin/* also
+    // require credentials. The plan text is exact: "all /ui/*
+    // and /admin/* routes require auth when [auth] enabled".
+    //
+    // Browser requests get a 303 redirect to the login page so
+    // the user lands somewhere useful; API-style requests (Accept:
+    // application/json or no Accept header on an /admin/* path)
+    // get a 401 with a JSON error envelope.
+    if path.starts_with("/ui/") || path.starts_with("/admin/") {
+        return ui_or_admin_unauthorized(&req, &path);
+    }
     // Anonymous UI access — attach a UserContext anyway so handlers
     // can rely on it being present.
     req.extensions_mut().insert(UserContext {
@@ -158,6 +170,55 @@ pub async fn middleware(State(state): State<AppState>, mut req: Request, next: N
         session_id: None,
     });
     next.run(req).await
+}
+
+/// 401 / 303 for unauthenticated `/ui/*` + `/admin/*` requests
+/// when `[auth] enabled = true`. Browser-style requests (no
+/// explicit `Accept: application/json`) get a 303 redirect to
+/// `/ui/login?next=<path>` so the login flow can return the user
+/// to where they were going. JSON clients get a 401 + envelope
+/// instead of a redirect they can't follow.
+fn ui_or_admin_unauthorized(req: &Request, path: &str) -> Response {
+    let wants_json = req
+        .headers()
+        .get(header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.contains("application/json"))
+        .unwrap_or(false);
+    if wants_json {
+        return unauthorized("invalid or missing credentials");
+    }
+    // 303 See Other so the browser follows the login form, then
+    // comes back to where the user was trying to go.
+    let next = urlencoding_minimal(path);
+    let location = format!("/ui/login?next={next}");
+    let mut resp = (StatusCode::SEE_OTHER, "").into_response();
+    resp.headers_mut()
+        .insert(header::LOCATION, location.parse().unwrap());
+    resp
+}
+
+/// Minimal percent-encoding for the `next` redirect param.
+/// Avoids pulling in the full `urlencoding` crate for one
+/// use site. Handles the only chars that appear in our
+/// /ui/* and /admin/* paths: slashes, colons, query strings.
+fn urlencoding_minimal(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' | '/' | '?' | '=' | '&' => {
+                out.push(c);
+            }
+            _ => {
+                let mut buf = [0u8; 4];
+                let bytes = c.encode_utf8(&mut buf);
+                for b in bytes.bytes() {
+                    out.push_str(&format!("%{:02X}", b));
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Helper: create a new session for a user, return the cookie value.
@@ -242,6 +303,35 @@ fn unauthorized(msg: &str) -> Response {
         })),
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod ui_auth_tests {
+    use super::*;
+
+    #[test]
+    fn url_encoding_handles_safe_chars() {
+        // Reserved-but-safe chars survive unescaped.
+        let out = urlencoding_minimal("/ui/providers?foo=bar&baz=1");
+        assert_eq!(out, "/ui/providers?foo=bar&baz=1");
+    }
+
+    #[test]
+    fn url_encoding_escapes_unsafe_chars() {
+        // Spaces, quotes, etc. become %XX.
+        let out = urlencoding_minimal("/ui/x y");
+        assert_eq!(out, "/ui/x%20y");
+        let out = urlencoding_minimal("/ui/a\"b");
+        assert_eq!(out, "/ui/a%22b");
+    }
+
+    #[test]
+    fn url_encoding_handles_unicode() {
+        // Multi-byte UTF-8 encoded byte-by-byte.
+        let out = urlencoding_minimal("/ui/café");
+        // "café" → c, a, f, %C3, %A9
+        assert_eq!(out, "/ui/caf%C3%A9");
+    }
 }
 
 fn keys_from_config(cfg: &crate::config::types::AuthConfig) -> Vec<String> {

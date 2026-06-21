@@ -11,7 +11,26 @@ and this project aims to follow [Semantic Versioning](https://semver.org/).
 
 ## [0.2.0] — 2026-06 (in progress)
 
-The v0.2.0 series is the "production hardening" release. Generated
+### Changed (rc2 vs rc1)
+
+- **`[auth] enabled` default is now `true`** (was `false`).
+  Combined with the strict `ROUTER_MASTER_KEY` gate (P2-2), a
+  fresh `token-dealer.toml` now refuses to start until the
+  operator sets the env var and either runs through the
+  first-run admin bootstrap (printed password) or explicitly
+  opts out with `enabled = false`.
+- **`/ui/*` and `/admin/*` routes now require auth** when
+  `[auth] enabled = true`. Browser requests get a 303 redirect
+  to `/ui/login?next=<path>` so the login flow can return the
+  user to where they were going. JSON clients get a 401 with
+  the OpenAI-shape error envelope. Public paths
+  (`/health`, `/ui/style.css`, `/ui/login`, `/ui/setup`,
+  `/admin/oauth/callback`, etc.) remain exempt.
+- Hand-rolled `urlencoding_minimal` for the `next` redirect
+  param (avoids pulling the full `urlencoding` crate for one
+  use site; 3 unit tests for safe / unsafe / unicode chars).
+
+ is the "production hardening" release. Generated
 from a 27-turn `/grill-me` interview; full plan in
 `.ai/plans/v0.2.0-hardening.md`. Scope was 7 floor items across
 3 phases (P1 Foundation → P2 Safety → P3 Features + Docs) over
@@ -123,13 +142,10 @@ from a 27-turn `/grill-me` interview; full plan in
 
 ### Known limitations (deferred to v0.3+)
 
-- **`/ui/*` and `/admin/*` paths are NOT yet gated on auth**
-  when `[auth] enabled = true`. Anonymous access still works;
-  the plan's "all routes require auth" rule is the only
-  follow-up from this series.
-- The auth-enabled default stays `false` for v0.2.0 to
-  preserve existing dev workflows. Flipping the default is a
-  one-line change once `/ui/*` is gated.
+- The `/ui/*` + `/admin/*` auth gate and the
+  `[auth] enabled = true` default **are** in place as of
+  v0.2.0-rc2 (previously flagged as rc1 follow-ups). No
+  remaining gaps in this section.
 - Cross-shape transpilation for `/v1/messages` and
   `/v1/responses` (Anthropic↔OpenAI, Responses↔ChatCompletions)
   is explicitly deferred.

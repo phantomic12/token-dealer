@@ -27,6 +27,11 @@ use wiremock::{
 
 async fn make_state(mock_base: &str) -> AppState {
     let mut cfg = RouterConfig::default();
+    // Tests run without an API key on the inbound side — the
+    // provider's key ("test-key") is what we set in the
+    // outbound call. Disable auth so the auth middleware
+    // doesn't 401 these requests.
+    cfg.auth.enabled = false;
     cfg.providers.push(ProviderConfig {
         id: "mock".to_string(),
         provider_type: ProviderType::Openai,
@@ -292,6 +297,7 @@ async fn non_standard_path_provider_routes_correctly() {
         .await;
 
     let mut cfg = RouterConfig::default();
+    cfg.auth.enabled = false;
     cfg.database = DatabaseConfig {
         path: ":memory:".to_string(),
     };
@@ -442,6 +448,7 @@ async fn fallback_chain_skips_500_provider_to_next() {
         .await;
 
     let mut cfg = RouterConfig::default();
+    cfg.auth.enabled = false;
     cfg.database = DatabaseConfig {
         path: ":memory:".to_string(),
     };
@@ -598,6 +605,7 @@ async fn request_log_persists_after_completion() {
 #[tokio::test]
 async fn auth_rejects_request_with_wrong_key() {
     let mut cfg = RouterConfig::default();
+    cfg.auth.enabled = false;
     cfg.database = DatabaseConfig {
         path: ":memory:".to_string(),
     };
@@ -876,6 +884,7 @@ async fn image_endpoint_passes_through_to_provider() {
         .await;
 
     let mut cfg = RouterConfig::default();
+    cfg.auth.enabled = false;
     cfg.database = DatabaseConfig {
         path: ":memory:".to_string(),
     };
@@ -968,6 +977,7 @@ async fn make_state_with_specificity(
     extra_provider: Option<(&str, &str, &str)>,
 ) -> AppState {
     let mut cfg = RouterConfig::default();
+    cfg.auth.enabled = false;
     cfg.database = DatabaseConfig {
         path: ":memory:".to_string(),
     };
@@ -1223,6 +1233,9 @@ async fn make_state_with_provider(
     default_model: &str,
 ) -> AppState {
     let mut cfg = RouterConfig::default();
+    // Tests run without an inbound API key — disable auth so
+    // the auth middleware doesn't 401 these requests.
+    cfg.auth.enabled = false;
     cfg.providers.push(ProviderConfig {
         id: id.to_string(),
         provider_type,

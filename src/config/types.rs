@@ -44,8 +44,15 @@ pub struct AuthConfig {
 
 impl Default for AuthConfig {
     fn default() -> Self {
+        // v0.2.0 plan item 1: `[auth] enabled = true` is now
+        // the default. Combined with the strict master-key gate
+        // (item 2), this means a fresh `token-dealer.toml` will
+        // refuse to start until the operator sets
+        // `ROUTER_MASTER_KEY` and either runs through the
+        // first-run admin bootstrap (printed password) or
+        // explicitly opts out with `enabled = false`.
         Self {
-            enabled: false,
+            enabled: true,
             admin_key: None,
             keys: Vec::new(),
         }
