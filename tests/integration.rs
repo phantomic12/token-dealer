@@ -1494,3 +1494,146 @@ async fn xai_adapter_uses_bearer_and_openai_shape() {
     assert_eq!(body["choices"][0]["message"]["content"], "hello from grok");
     assert_eq!(body["usage"]["total_tokens"], 7);
 }
+
+// ── /auth/login endpoint ─────────────────────────────────────────
+//
+// Regression for the form-vs-JSON content-type bug: the WebUI
+// login form posts `application/x-www-form-urlencoded`, and the
+// JSON-only handler was rejecting those with 415, making the
+// sign-in button appear to do nothing. The handler now
+// dispatches on Content-Type and returns HTML (with HX-Redirect
+// on success) for form requests.
+
+mod login_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{header, Request, StatusCode};
+    use serde_json::json;
+    use tower::ServiceExt;
+
+    async fn app_with_admin() -> (axum::Router, String, String) {
+        let state = make_state("http://127.0.0.1:0").await;
+        let users = token_dealer::auth::UserStore::new(state.db.clone());
+        let _ = users
+            .create_user("admin@test.local", "Admin", Some("hunter22!"), token_dealer::auth::Role::Admin)
+            .await
+            .unwrap();
+        let (_api_key, plaintext) = users
+            .create_api_key(
+                &users
+                    .get_user_by_email("admin@test.local")
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .id,
+                "test-key",
+            )
+            .await
+            .unwrap();
+        let app = build_router(state);
+        (app, plaintext, "hunter22!".to_string())
+    }
+
+    fn post_json(uri: &str, body: &str) -> Request<Body> {
+        Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    }
+
+    fn post_form(uri: &str, body: &str) -> Request<Body> {
+        Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn login_json_path_returns_200_with_cookie() {
+        let (app, key, _pw) = app_with_admin().await;
+        let req = post_json("/auth/login", &json!({"api_key": key}).to_string());
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(
+            resp.headers().contains_key(header::SET_COOKIE),
+            "JSON login should set the session cookie"
+        );
+        let ct = resp
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(
+            ct.starts_with("application/json"),
+            "JSON request should get JSON response, got {ct}"
+        );
+    }
+
+    #[tokio::test]
+    async fn login_form_path_returns_html_with_hx_redirect() {
+        let (app, _key, pw) = app_with_admin().await;
+        let body = format!("email=admin%40test.local&password={}", urlencode(&pw));
+        let req = post_form("/auth/login", &body);
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let h = resp.headers();
+        assert!(
+            h.contains_key(header::SET_COOKIE),
+            "form login should set the session cookie"
+        );
+        assert_eq!(h.get("HX-Redirect").and_then(|v| v.to_str().ok()), Some("/ui/"));
+        let ct = h
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(ct.starts_with("text/html"), "form request should get HTML, got {ct}");
+    }
+
+    #[tokio::test]
+    async fn login_form_bad_creds_returns_html_error() {
+        let (app, _key, _pw) = app_with_admin().await;
+        let body = "email=admin%40test.local&password=wrong";
+        let req = post_form("/auth/login", body);
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        let ct = resp
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(ct.starts_with("text/html"), "form 401 should be HTML, got {ct}");
+        let body_bytes = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
+        let s = String::from_utf8_lossy(&body_bytes);
+        assert!(s.contains("invalid credentials"), "body should explain error: {s}");
+    }
+
+    #[tokio::test]
+    async fn login_form_with_api_key_field() {
+        // The /ui/login form for API-key sign-in submits a single
+        // `api_key=…` field — verify the form path handles it.
+        let (app, key, _pw) = app_with_admin().await;
+        let body = format!("api_key={}", urlencode(&key));
+        let req = post_form("/auth/login", &body);
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers().get("HX-Redirect").and_then(|v| v.to_str().ok()),
+            Some("/ui/")
+        );
+    }
+
+    fn urlencode(s: &str) -> String {
+        s.bytes()
+            .map(|b| match b {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                    (b as char).to_string()
+                }
+                _ => format!("%{:02X}", b),
+            })
+            .collect()
+    }
+}

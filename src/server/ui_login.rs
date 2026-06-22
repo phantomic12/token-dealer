@@ -42,13 +42,22 @@ pub async fn login_page(
     <button id="tab-pw" class="secondary">Email + password</button>
   </div>
 
-  <form id="form-key" hx-post="/auth/login" hx-target="#login-result" hx-swap="innerHTML">
+  <form id="form-key"
+        hx-post="/auth/login"
+        hx-target="#login-result"
+        hx-swap="innerHTML"
+        hx-indicator="#login-spinner">
     <label>API key</label>
     <input name="api_key" type="password" placeholder="tk-…" autofocus />
     <button type="submit">Sign in with API key</button>
   </form>
 
-  <form id="form-pw" hx-post="/auth/login" hx-target="#login-result" hx-swap="innerHTML" style="display:none">
+  <form id="form-pw"
+        hx-post="/auth/login"
+        hx-target="#login-result"
+        hx-swap="innerHTML"
+        hx-indicator="#login-spinner"
+        style="display:none">
     <label>Email</label>
     <input name="email" type="email" />
     <label>Password</label>
@@ -56,6 +65,7 @@ pub async fn login_page(
     <button type="submit">Sign in</button>
   </form>
 
+  <span id="login-spinner" class="htmx-indicator" aria-hidden="true">Signing in…</span>
   <div id="login-result"></div>
 </div>
 
@@ -105,15 +115,11 @@ impl From<LoginForm> for crate::server::auth_endpoints::LoginReq {
     }
 }
 
-/// HTMX form fallback for the login page (when JS isn't loaded).
-pub async fn login_form(
-    State(state): State<AppState>,
-    headers: axum::http::HeaderMap,
-    Form(body): Form<LoginForm>,
-) -> Response {
-    let req: crate::server::auth_endpoints::LoginReq = body.into();
-    crate::server::auth_endpoints::login(State(state), headers, axum::Json(req)).await
-}
+// `login_form` was the previous form-encoded handler. The /auth/login
+// endpoint in auth_endpoints.rs now dispatches on Content-Type itself
+// (form vs JSON) and returns HTML on the form path with HX-Redirect.
+// Keeping this module-level doc as a tombstone; the function was removed
+// in favor of the unified dispatch in auth_endpoints::login.
 
 pub async fn setup_page(State(state): State<AppState>) -> Response {
     // If users exist, redirect to login.

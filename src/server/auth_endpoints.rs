@@ -32,14 +32,40 @@ impl Clone for LoginReq {
 }
 
 /// POST /auth/login — accepts an API key OR email+password.
-/// Returns 200 with a Set-Cookie header on success.
+///
+/// Dispatches on request Content-Type:
+///   - `application/json`        → JSON request, JSON response (API clients)
+///   - anything else (including   → form-encoded request, HTML response
+///     no Content-Type / form)     with `HX-Redirect: /ui/` on success so
+///                                  htmx navigates the browser to the
+///                                  dashboard. This is what the
+///                                  `/ui/login` page submits.
+///
+/// Returns 200 with a Set-Cookie header on success. 401 on bad
+/// credentials. 400 if neither api_key nor email+password supplied.
 pub async fn login(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(body): Json<LoginReq>,
+    body: axum::body::Bytes,
 ) -> Response {
+    let is_form = !is_json_content_type(&headers);
+    let req: LoginReq = if is_form {
+        match serde_urlencoded::from_bytes(&body) {
+            Ok(r) => r,
+            Err(_e) => {
+                return login_bad_request("malformed form body", is_form);
+            }
+        }
+    } else {
+        match serde_json::from_slice(&body) {
+            Ok(r) => r,
+            Err(_e) => {
+                return login_bad_request("malformed JSON body", is_form);
+            }
+        }
+    };
     // Path 1: API key login. Verify the key, create a session.
-    if let Some(key) = &body.api_key {
+    if let Some(key) = &req.api_key {
         if !key.is_empty() {
             if let Some((user, _api_key)) = state
                 .user_store
@@ -48,51 +74,78 @@ pub async fn login(
                 .ok()
                 .flatten()
             {
-                return finish_login(&state, &headers, &user).await;
+                return finish_login(&state, &headers, &user, is_form).await;
             }
-            return (
-                StatusCode::UNAUTHORIZED,
-                Json(serde_json::json!({"error": "invalid API key"})),
-            )
-                .into_response();
+            return login_unauthorized("invalid API key", is_form);
         }
     }
     // Path 2: email + password.
-    if let (Some(email), Some(password)) = (&body.email, &body.password) {
+    if let (Some(email), Some(password)) = (&req.email, &req.password) {
         let user = match state.user_store.get_user_by_email(email).await {
             Ok(Some(u)) => u,
-            _ => {
-                return (
-                    StatusCode::UNAUTHORIZED,
-                    Json(serde_json::json!({"error": "invalid credentials"})),
-                )
-                    .into_response();
-            }
+            _ => return login_unauthorized("invalid credentials", is_form),
         };
         let Some(hash) = user.password_hash.as_ref() else {
-            return (
-                StatusCode::UNAUTHORIZED,
-                Json(serde_json::json!({"error": "password login not enabled for this user"})),
-            )
-                .into_response();
+            return login_unauthorized("password login not enabled for this user", is_form);
         };
         if !verify_password(password, hash) {
-            return (
-                StatusCode::UNAUTHORIZED,
-                Json(serde_json::json!({"error": "invalid credentials"})),
-            )
-                .into_response();
+            return login_unauthorized("invalid credentials", is_form);
         }
-        return finish_login(&state, &headers, &user).await;
+        return finish_login(&state, &headers, &user, is_form).await;
     }
-    (
-        StatusCode::BAD_REQUEST,
-        Json(serde_json::json!({"error": "provide api_key OR email+password"})),
-    )
-        .into_response()
+    login_bad_request("provide api_key OR email+password", is_form)
 }
 
-async fn finish_login(state: &AppState, headers: &HeaderMap, user: &User) -> Response {
+/// True if the request's Content-Type advertises JSON.
+fn is_json_content_type(headers: &HeaderMap) -> bool {
+    headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.split(';').next().unwrap_or("").trim().eq_ignore_ascii_case("application/json"))
+        .unwrap_or(false)
+}
+
+fn login_unauthorized(msg: &'static str, is_form: bool) -> Response {
+    if is_form {
+        let html = format!(
+            r##"<div class="flash error">{}</div>"##,
+            html_escape(msg)
+        );
+        return (StatusCode::UNAUTHORIZED, [(header::CONTENT_TYPE, "text/html; charset=utf-8")], html)
+            .into_response();
+    }
+    (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": msg}))).into_response()
+}
+
+fn login_bad_request(msg: &'static str, is_form: bool) -> Response {
+    if is_form {
+        let html = format!(
+            r##"<div class="flash error">{}</div>"##,
+            html_escape(msg)
+        );
+        return (StatusCode::BAD_REQUEST, [(header::CONTENT_TYPE, "text/html; charset=utf-8")], html)
+            .into_response();
+    }
+    (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": msg}))).into_response()
+}
+
+/// Minimal HTML escape for the inline error snippets above.
+fn html_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+async fn finish_login(state: &AppState, headers: &HeaderMap, user: &User, is_form: bool) -> Response {
     let _ = state.user_store.touch_last_login(&user.id).await;
     let user_agent = headers
         .get(header::USER_AGENT)
@@ -113,19 +166,42 @@ async fn finish_login(state: &AppState, headers: &HeaderMap, user: &User) -> Res
     {
         Ok(s) => s,
         Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": format!("session: {e}")})),
-            )
-                .into_response();
+            let msg = format!("session: {e}");
+            return if is_form {
+                login_unauthorized("session error", true)
+            } else {
+                (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": msg})))
+                    .into_response()
+            };
         }
     };
-    // Set HttpOnly + Secure (in production) cookie.
+    // Set HttpOnly + SameSite=Lax cookie. (Secure flag is added
+    // when the request hits us over HTTPS — see auth::create_session_cookie
+    // in auth.rs for the gate.)
     let cookie_value = format!(
         "{}={}; HttpOnly; SameSite=Lax; Path=/; Max-Age=2592000",
         mw::session_cookie_name(),
         plaintext
     );
+    if is_form {
+        // htmx path: send `HX-Redirect` so the browser navigates
+        // to the dashboard. Body is irrelevant for a redirect
+        // request, but send a tiny success flash in case htmx
+        // is unavailable.
+        let mut resp = (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+            r##"<div class="flash success">Signed in. Redirecting…</div>"##,
+        )
+            .into_response();
+        resp.headers_mut()
+            .insert(header::SET_COOKIE, cookie_value.parse().unwrap());
+        resp.headers_mut()
+            .insert("HX-Redirect", "/ui/".parse().unwrap());
+        resp.headers_mut()
+            .insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
+        return resp;
+    }
     let mut resp = (
         StatusCode::OK,
         Json(serde_json::json!({
