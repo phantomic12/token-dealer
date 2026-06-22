@@ -1515,7 +1515,12 @@ mod login_tests {
         let state = make_state("http://127.0.0.1:0").await;
         let users = token_dealer::auth::UserStore::new(state.db.clone());
         let _ = users
-            .create_user("admin@test.local", "Admin", Some("hunter22!"), token_dealer::auth::Role::Admin)
+            .create_user(
+                "admin@test.local",
+                "Admin",
+                Some("hunter22!"),
+                token_dealer::auth::Role::Admin,
+            )
             .await
             .unwrap();
         let (_api_key, plaintext) = users
@@ -1585,12 +1590,18 @@ mod login_tests {
             h.contains_key(header::SET_COOKIE),
             "form login should set the session cookie"
         );
-        assert_eq!(h.get("HX-Redirect").and_then(|v| v.to_str().ok()), Some("/ui/"));
+        assert_eq!(
+            h.get("HX-Redirect").and_then(|v| v.to_str().ok()),
+            Some("/ui/")
+        );
         let ct = h
             .get(header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
             .unwrap_or("");
-        assert!(ct.starts_with("text/html"), "form request should get HTML, got {ct}");
+        assert!(
+            ct.starts_with("text/html"),
+            "form request should get HTML, got {ct}"
+        );
     }
 
     #[tokio::test]
@@ -1605,10 +1616,16 @@ mod login_tests {
             .get(header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
             .unwrap_or("");
-        assert!(ct.starts_with("text/html"), "form 401 should be HTML, got {ct}");
+        assert!(
+            ct.starts_with("text/html"),
+            "form 401 should be HTML, got {ct}"
+        );
         let body_bytes = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
         let s = String::from_utf8_lossy(&body_bytes);
-        assert!(s.contains("invalid credentials"), "body should explain error: {s}");
+        assert!(
+            s.contains("invalid credentials"),
+            "body should explain error: {s}"
+        );
     }
 
     #[tokio::test]
@@ -1621,7 +1638,9 @@ mod login_tests {
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         assert_eq!(
-            resp.headers().get("HX-Redirect").and_then(|v| v.to_str().ok()),
+            resp.headers()
+                .get("HX-Redirect")
+                .and_then(|v| v.to_str().ok()),
             Some("/ui/")
         );
     }

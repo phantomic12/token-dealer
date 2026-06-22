@@ -34,12 +34,11 @@ impl Clone for LoginReq {
 /// POST /auth/login — accepts an API key OR email+password.
 ///
 /// Dispatches on request Content-Type:
-///   - `application/json`        → JSON request, JSON response (API clients)
-///   - anything else (including   → form-encoded request, HTML response
-///     no Content-Type / form)     with `HX-Redirect: /ui/` on success so
-///                                  htmx navigates the browser to the
-///                                  dashboard. This is what the
-///                                  `/ui/login` page submits.
+///   * `application/json` — JSON request, JSON response (API clients).
+///   * anything else (form, no Content-Type) — form-encoded request,
+///     HTML response with `HX-Redirect: /ui/` on success so htmx
+///     navigates the browser to the dashboard. This is what the
+///     `/ui/login` page submits.
 ///
 /// Returns 200 with a Set-Cookie header on success. 401 on bad
 /// credentials. 400 if neither api_key nor email+password supplied.
@@ -101,32 +100,48 @@ fn is_json_content_type(headers: &HeaderMap) -> bool {
     headers
         .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
-        .map(|s| s.split(';').next().unwrap_or("").trim().eq_ignore_ascii_case("application/json"))
+        .map(|s| {
+            s.split(';')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .eq_ignore_ascii_case("application/json")
+        })
         .unwrap_or(false)
 }
 
 fn login_unauthorized(msg: &'static str, is_form: bool) -> Response {
     if is_form {
-        let html = format!(
-            r##"<div class="flash error">{}</div>"##,
-            html_escape(msg)
-        );
-        return (StatusCode::UNAUTHORIZED, [(header::CONTENT_TYPE, "text/html; charset=utf-8")], html)
+        let html = format!(r##"<div class="flash error">{}</div>"##, html_escape(msg));
+        return (
+            StatusCode::UNAUTHORIZED,
+            [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+            html,
+        )
             .into_response();
     }
-    (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": msg}))).into_response()
+    (
+        StatusCode::UNAUTHORIZED,
+        Json(serde_json::json!({"error": msg})),
+    )
+        .into_response()
 }
 
 fn login_bad_request(msg: &'static str, is_form: bool) -> Response {
     if is_form {
-        let html = format!(
-            r##"<div class="flash error">{}</div>"##,
-            html_escape(msg)
-        );
-        return (StatusCode::BAD_REQUEST, [(header::CONTENT_TYPE, "text/html; charset=utf-8")], html)
+        let html = format!(r##"<div class="flash error">{}</div>"##, html_escape(msg));
+        return (
+            StatusCode::BAD_REQUEST,
+            [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+            html,
+        )
             .into_response();
     }
-    (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": msg}))).into_response()
+    (
+        StatusCode::BAD_REQUEST,
+        Json(serde_json::json!({"error": msg})),
+    )
+        .into_response()
 }
 
 /// Minimal HTML escape for the inline error snippets above.
@@ -145,7 +160,12 @@ fn html_escape(s: &str) -> String {
     out
 }
 
-async fn finish_login(state: &AppState, headers: &HeaderMap, user: &User, is_form: bool) -> Response {
+async fn finish_login(
+    state: &AppState,
+    headers: &HeaderMap,
+    user: &User,
+    is_form: bool,
+) -> Response {
     let _ = state.user_store.touch_last_login(&user.id).await;
     let user_agent = headers
         .get(header::USER_AGENT)
@@ -170,7 +190,10 @@ async fn finish_login(state: &AppState, headers: &HeaderMap, user: &User, is_for
             return if is_form {
                 login_unauthorized("session error", true)
             } else {
-                (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": msg})))
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"error": msg})),
+                )
                     .into_response()
             };
         }
