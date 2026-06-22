@@ -1584,8 +1584,10 @@ mod login_tests {
         let body = format!("email=admin%40test.local&password={}", urlencode(&pw));
         let req = post_form("/auth/login", &body);
         let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-        let h = resp.headers();
+        let status = resp.status();
+        let h = resp.headers().clone();
+        let _ = resp.into_body();
+        assert_eq!(status, StatusCode::OK);
         assert!(
             h.contains_key(header::SET_COOKIE),
             "form login should set the session cookie"
@@ -1651,7 +1653,7 @@ mod login_tests {
                 b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
                     (b as char).to_string()
                 }
-                _ => format!("{b:02X}"),
+                _ => format!("%{b:02X}"),
             })
             .collect()
     }
